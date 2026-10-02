@@ -15,12 +15,10 @@
     ranked: { label: "Ranked Session", individual: true },
     training: { label: "Training", individual: true }
   };
-  const TYPE_KEYS = Object.keys(TYPES);
-  const DEFAULT_MIN = { ranked: 90, training: 120 };
   const DEFAULT_FOCUS = ["Car control", "Shooting", "Aerials", "Dribbling & flicks", "Rotation", "Defense", "Boost management", "Kickoffs", "Recoveries", "Reads & decisions"];
   const DEFAULT_SETTINGS = {
     title: "Nebraska Esports",
-    targets: { hours: 15, minDays: 0 },
+    targets: { ranked: 3, training: 2 },
     rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
   };
   const LONG_SESSION_MIN = 360;
@@ -49,9 +47,6 @@
   function weekDates(wk) { return Array.from({ length: 7 }, (_, i) => addDays(wk, i)); }
   function fmtDate(s, o) { return parseYmd(s).toLocaleDateString("en-US", o); }
   function fmtDur(m) { m = Math.max(0, Math.round(m || 0)); const h = Math.floor(m / 60), r = m % 60; return h ? (r ? h + "h " + r + "m" : h + "h") : r + "m"; }
-  function hrs(m) { const h = Math.round(((m || 0) / 60) * 10) / 10; return Number.isInteger(h) ? String(h) : h.toFixed(1); }
-  function isTime(t) { return typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t); }
-  function fmtTime(t) { if (!isTime(t)) return ""; const [h, mi] = t.split(":").map(Number); return (h % 12 || 12) + ":" + String(mi).padStart(2, "0") + " " + (h >= 12 ? "PM" : "AM"); }
   function fmtClock(iso) { return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }); }
   function fmtStamp(iso) { return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
   function weekLabel(wk) { return fmtDate(wk, { month: "short", day: "numeric" }) + " – " + fmtDate(addDays(wk, 6), { month: "short", day: "numeric" }); }
@@ -92,8 +87,8 @@
     if (!isPlain(raw)) return s;
     if (typeof raw.title === "string" && raw.title.trim()) s.title = raw.title.trim().slice(0, 60);
     const t = isPlain(raw.targets) ? raw.targets : {};
-    s.targets.hours = numIn(t.hours, s.targets.hours, 80);
-    s.targets.minDays = Math.round(numIn(t.minDays, s.targets.minDays, 7));
+    s.targets.ranked = Math.round(numIn(t.ranked, s.targets.ranked, 14));
+    s.targets.training = Math.round(numIn(t.training, s.targets.training, 14));
     if (isPlain(raw.rankedGoals)) for (const p of PL) {
       const g = isPlain(raw.rankedGoals[p.key]) ? raw.rankedGoals[p.key] : {};
       s.rankedGoals[p.key] = { min: numOrNull(g.min), max: numOrNull(g.max) };
@@ -134,14 +129,8 @@
     };
   }
   function normWeek(raw, id) {
-    const w = { week: id, plan: {}, sessions: [] };
+    const w = { week: id, sessions: [] };
     if (!isPlain(raw)) return w;
-    if (isPlain(raw.plan)) for (const d of Object.keys(raw.plan)) {
-      const items = raw.plan[d];
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !Array.isArray(items)) continue;
-      const arr = items.filter(i => isPlain(i) && TYPES[i.type] && typeof i.id === "string").map(i => ({ id: i.id, type: i.type, minutes: Math.min(720, n0(i.minutes)), time: isTime(i.time) ? i.time : "" }));
-      if (arr.length) w.plan[d] = arr;
-    }
     if (Array.isArray(raw.sessions)) w.sessions = raw.sessions.filter(s => isPlain(s) && typeof s.id === "string" && TYPES[s.type] && typeof s.startedAt === "string").map(normSession);
     return w;
   }
@@ -152,7 +141,6 @@
     settings: normSettings(null), me: null, weeks: {},
     view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
-    teamFilter: ["all", "varsity", "white", "black"].includes(pref.get("team")) ? pref.get("team") : "all",
     removals: {},
     undo: [], saveErr: null, settingsDirty: false, board: null
   };
@@ -240,65 +228,38 @@
     el.textContent = t;
   }
 
-  /* ---------- Week math ---------- */
-  function sumMin(list, pred) { return list.reduce((a, x) => a + (pred(x) ? x.minutes : 0), 0); }
-  function weekStats(w, wk) {
-    const today = S.today;
-    const st = { pInd: 0, dInd: 0, rInd: 0, pDays: 0, dDays: 0, rDays: 0, games: blankGames(), hasAny: false };
-    for (const d of weekDates(wk)) {
-      const items = (w && w.plan[d]) || [];
-      const ses = w ? w.sessions.filter(s => s.date === d && s.endedAt) : [];
-      if (items.length || (w && w.sessions.some(s => s.date === d))) st.hasAny = true;
-      const pI = sumMin(items, () => true), dI = sumMin(ses, () => true);
-      const pD = items.length > 0, dD = ses.length > 0;
-      st.pInd += pI; st.dInd += dI;
-      if (pD) st.pDays++; if (dD) st.dDays++;
-      if (d > today) { st.rInd += pI; if (pD) st.rDays++; }
-      else if (d === today) { st.rInd += Math.max(0, pI - dI); if (pD && !dD) st.rDays++; }
-      for (const s of ses) for (const p of PL) { st.games[p.key].w += s.games[p.key].w; st.games[p.key].l += s.games[p.key].l; }
+  /* ---------- Week math: finished sessions count toward the weekly requirement ---------- */
+  function weekStats(w) {
+    const st = { ranked: 0, training: 0, games: blankGames(), hasAny: false };
+    for (const s of w ? w.sessions : []) {
+      st.hasAny = true;
+      if (!s.endedAt) continue;
+      if (s.type === "ranked") st.ranked++;
+      else if (s.type === "training") st.training++;
+      for (const p of PL) { st.games[p.key].w += s.games[p.key].w; st.games[p.key].l += s.games[p.key].l; }
     }
     return st;
   }
   function reqRows(st) {
     const T = S.settings.targets, rows = [];
-    if (T.hours > 0) rows.push({ key: "ind", label: "Hours", target: Math.round(T.hours * 60), planned: st.pInd, done: st.dInd, remain: st.rInd, fmt: hrs, unit: " h" });
-    if (T.minDays > 0) rows.push({ key: "days", label: "Training days", target: T.minDays, planned: st.pDays, done: st.dDays, remain: st.rDays, fmt: String, unit: "" });
+    if (T.ranked > 0) rows.push({ key: "ranked", label: "Ranked Sessions", target: T.ranked, done: st.ranked });
+    if (T.training > 0) rows.push({ key: "training", label: "Training", target: T.training, done: st.training });
     return rows;
   }
-  function shortfall(rows) {
-    const out = [];
-    for (const r of rows) {
-      const gap = r.target - r.planned;
-      if (gap <= 0) continue;
-      out.push(r.key === "ind" ? hrs(gap) + " h" : gap + (gap === 1 ? " day" : " days"));
-    }
-    return out;
-  }
+  function remaining(rows) { return rows.reduce((a, r) => a + Math.max(0, r.target - r.done), 0); }
   function renderReqs(box, rows) {
     box.textContent = "";
     for (const r of rows) {
-      const wrap = mk("div", "req");
-      const top = mk("div", "req-top");
-      const name = mk("span", "req-name", r.label);
-      if (r.note) name.append(mk("span", "fine", " · " + r.note));
-      const nums = mk("span", "req-nums");
-      nums.append(mk("b", "", r.fmt(r.done)), document.createTextNode(" / " + r.fmt(r.target) + r.unit + " · " + r.fmt(r.planned) + " planned"));
-      top.append(name, nums);
-      const meter = mk("div", "meter" + (r.done >= r.target ? " full" : ""));
-      meter.setAttribute("role", "img");
-      meter.setAttribute("aria-label", r.label + ": " + r.fmt(r.done) + " done, " + r.fmt(r.planned) + " planned of " + r.fmt(r.target) + r.unit);
-      const plan = mk("span", "m-plan"); plan.style.width = Math.min(100, (r.planned / r.target) * 100) + "%";
-      const done = mk("span", "m-done"); done.style.width = "calc(" + Math.min(100, (r.done / r.target) * 100) + "% - 4px)";
-      done.hidden = r.done <= 0;
-      meter.append(plan, done);
-      wrap.append(top, meter);
+      const wrap = mk("div", "req" + (r.done >= r.target ? " met" : ""));
+      const pips = mk("span", "pips");
+      pips.setAttribute("aria-hidden", "true");
+      for (let i = 0; i < Math.min(14, Math.max(r.target, r.done)); i++) pips.append(mk("i", i < r.done ? "on" : ""));
+      wrap.append(mk("span", "req-name", r.label), pips, mk("span", "req-nums", r.done + " / " + r.target));
       box.append(wrap);
     }
   }
-  function verdictText(rows) {
-    const short = shortfall(rows);
-    if (!rows.length) return ["", ""];
-    return short.length ? ["Short: " + short.join(", "), "verdict short"] : ["✓ Plan covers the week", "verdict good"];
+  function missedText(rows) {
+    return rows.filter(r => r.done < r.target).map(r => (r.target - r.done) + " " + (r.key === "ranked" ? "Ranked" : "Training")).join(", ");
   }
 
   /* ---------- Window chrome ---------- */
@@ -328,7 +289,7 @@
       add("My Training", "view", S.view === "player", () => setView("player"));
       box.append(mk("span", "tsep"));
     }
-    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Player", "#winPlayer"], ["Board", "#winBoardC"], ["Team", "#winTeam"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Ranks", "#winRanks"], ["Board", "#winBoard"]];
+    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Player", "#winPlayer"], ["Board", "#winBoardC"], ["Settings", "#winSettings"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Ranks", "#winRanks"], ["Board", "#winBoard"]];
     for (const [label, sel] of secs) add(label, "sec", null, () => showWin(sel));
     add(S.me.name || "Account", "acct", null, openAccount);
   }
@@ -497,19 +458,6 @@
     }
     c.querySelector('[data-act="undo"]').disabled = !S.undo.some(u => u.sid === a.id);
   }
-  function makePlannedCard() {
-    const c = mk("div", "card");
-    c.innerHTML = '<div class="card-head"><p class="ctype"></p><p class="cmeta"></p></div><div class="card-actions"><button type="button" class="btn primary" data-act="checkin">Check in</button></div>';
-    return c;
-  }
-  function updatePlannedCard(c, item) {
-    c.querySelector(".ctype").textContent = TYPES[item.type].label;
-    c.querySelector(".cmeta").textContent = fmtDur(item.minutes) + (item.time ? " · " + fmtTime(item.time) : "");
-    const b = c.querySelector('[data-act="checkin"]');
-    b.dataset.plan = item.id;
-    b.dataset.type = item.type;
-    b.disabled = !!S.me.active;
-  }
   function makeDoneCard() {
     const c = mk("div", "card");
     c.innerHTML =
@@ -551,27 +499,17 @@
     if (!S.me) return;
     const t = S.today, wk = mondayOf(t), w = S.weeks[wk];
     $("#todayDate").textContent = fmtDate(t, { weekday: "long", month: "long", day: "numeric" });
-    const items = (w && w.plan[t]) || [];
-    const sessions = w ? w.sessions.filter(s => s.date === t) : [];
-    const used = new Set(sessions.map(s => s.planId).filter(Boolean));
-    const pending = items.filter(i => !used.has(i.id));
-    const done = sessions.filter(s => s.endedAt).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-    const parts = [];
-    if (items.length) parts.push(items.length + " planned");
-    if (done.length) parts.push(done.length + " done");
-    $("#todayKind").textContent = parts.join(" · ");
+    const done = (w ? w.sessions : []).filter(s => s.date === t && s.endedAt).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
     const a = S.me.active;
     keyed($("#activeBox"), a ? [a.id] : [], makeActiveCard, c => updateActiveCard(c));
-    keyed($("#plannedBox"), pending.map(i => i.id), makePlannedCard, (c, id) => updatePlannedCard(c, pending.find(i => i.id === id)));
     keyed($("#doneBox"), done.map(s => s.id), makeDoneCard, (c, id) => updateDoneCard(c, done.find(s => s.id === id), wk));
-    $("#adhocForm").hidden = !!a;
+    $("#checkins").hidden = !!a;
   }
-  (function fillAdhoc() { const sel = $("#adhocType"); TYPE_KEYS.forEach(k => sel.append(new Option(TYPES[k].label, k))); })();
 
-  function checkIn(type, planId) {
+  function checkIn(type) {
     if (!S.me || S.me.active || !TYPES[type]) return;
     const now = new Date(), date = S.today, wk = mondayOf(date);
-    const s = normSession({ id: newId(), planId: planId || null, date, type, startedAt: now.toISOString() });
+    const s = normSession({ id: newId(), date, type, startedAt: now.toISOString() });
     mutateWeek(wk, w => { w.sessions.push(s); }, 0);
     patchMe({ active: { id: s.id, week: wk, type, startedAt: s.startedAt, date } }, 0);
     S.undo = [];
@@ -600,7 +538,7 @@
     const b = e.target.closest("[data-act]");
     if (!b || b.disabled) return;
     const act = b.dataset.act;
-    if (act === "checkin") { checkIn(b.dataset.type, b.dataset.plan); return; }
+    if (act === "checkin") { checkIn(b.dataset.type); return; }
     if (act === "checkout") { checkOut(null); return; }
     if (act === "checkout-set") { const v = n0(b.closest(".warnbox").querySelector(".lw-min").value); if (v > 0) checkOut(v); return; }
     const ctx = cardCtx(b);
@@ -652,7 +590,6 @@
   });
   todayBody.addEventListener("submit", e => {
     e.preventDefault();
-    if (e.target.id === "adhocForm") { checkIn($("#adhocType").value, null); return; }
     if (e.target.dataset.form === "addfocus") {
       const input = e.target.querySelector("input");
       const raw = input.value.trim().replace(/\s+/g, " ").slice(0, 30);
@@ -667,114 +604,46 @@
     }
   });
 
-  /* ---------- My Week ---------- */
-  function makeDay() {
-    const d = mk("div", "day");
-    d.innerHTML =
-      '<div class="day-top"><label class="day-on"><input type="checkbox" data-act="dayon"><span class="dname"></span><span class="ddate"></span></label><span class="dsum"></span></div>' +
-      '<div class="items"></div><div class="dones"></div>' +
-      '<div><button type="button" class="btn sm" data-act="additem">+ Session</button></div>';
-    return d;
-  }
-  function makeItem() {
-    const r = mk("div", "item");
-    r.innerHTML =
-      '<select data-ifield="type" aria-label="Session type">' + TYPE_KEYS.map(k => '<option value="' + k + '">' + TYPES[k].label + "</option>").join("") + '</select>' +
-      '<label class="mins"><input type="number" min="0" max="720" step="15" data-ifield="minutes" aria-label="Minutes"> min</label>' +
-      '<span class="tm"><button type="button" class="linkbtn" data-act="addtime">+ Time</button>' +
-      '<input type="time" data-ifield="time" aria-label="Start time" hidden><button type="button" class="linkbtn" data-act="cleartime" hidden aria-label="Remove time">×</button></span>' +
-      '<button type="button" class="btn sm" data-act="rmitem" aria-label="Remove session">×</button>';
-    return r;
-  }
-  function updateItem(r, item) {
-    setVal(r.querySelector('[data-ifield="type"]'), item.type);
-    setVal(r.querySelector('[data-ifield="minutes"]'), String(item.minutes));
-    const t = r.querySelector('[data-ifield="time"]');
-    const show = !!item.time || r.dataset.timeOpen === "1";
-    t.hidden = !show;
-    r.querySelector('[data-act="addtime"]').hidden = show;
-    r.querySelector('[data-act="cleartime"]').hidden = !show;
-    setVal(t, item.time);
-  }
+  /* ---------- My Week: progress + finished sessions ---------- */
   function renderWeek() {
     if (!S.me) return;
     const wk = S.wk, thisWk = mondayOf(S.today);
     $("#wkLabel").textContent = weekLabel(wk);
     $("#wkThis").hidden = wk === thisWk;
-    const w = getWeek(wk);
-    const rows = reqRows(weekStats(w, wk));
+    const w = getWeek(wk), rows = reqRows(weekStats(w));
     renderReqs($("#reqBox"), rows);
-    const [vt, vc] = verdictText(rows);
-    $("#verdict").textContent = vt;
-    $("#verdict").className = vc || "verdict";
-    keyed($("#dayList"), weekDates(wk), makeDay, (d, date) => {
-      const items = w.plan[date] || [];
-      const ses = w.sessions.filter(s => s.date === date);
-      d.classList.toggle("on", items.length > 0);
-      d.classList.toggle("is-today", date === S.today);
-      d.dataset.date = date;
-      d.querySelector('[data-act="dayon"]').checked = items.length > 0;
-      d.querySelector(".dname").textContent = fmtDate(date, { weekday: "long" });
-      d.querySelector(".ddate").textContent = fmtDate(date, { month: "short", day: "numeric" });
-      const pMin = sumMin(items, () => true), dMin = sumMin(ses.filter(s => s.endedAt), () => true);
-      d.querySelector(".dsum").textContent = [items.length ? fmtDur(pMin) : "", dMin ? "✓ " + fmtDur(dMin) : ""].filter(Boolean).join(" · ");
-      keyed(d.querySelector(".items"), items.map(i => i.id), makeItem, (r, id) => updateItem(r, items.find(i => i.id === id)));
-      const dl = d.querySelector(".dones");
-      dl.textContent = "";
+    const v = $("#verdict"), left = remaining(rows);
+    if (rows.length && !left) { v.textContent = "\u2713 Week complete"; v.className = "verdict good"; }
+    else if (rows.length && wk < thisWk) { v.textContent = "Missed: " + missedText(rows); v.className = "verdict short"; }
+    else { v.textContent = ""; v.className = "verdict"; }
+    const log = $("#weekLog");
+    log.textContent = "";
+    for (const d of weekDates(wk)) {
+      const ses = w.sessions.filter(s => s.date === d).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+      if (!ses.length) continue;
+      const day = mk("div", "wl-day" + (d === S.today ? " is-today" : ""));
+      day.append(mk("p", "wl-date", fmtDate(d, { weekday: "short", month: "short", day: "numeric" })));
       for (const s of ses) {
-        const line = mk("p", "done-line" + (s.endedAt ? "" : " live"), (s.endedAt ? "✓ " : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtDur(s.minutes) : "now"));
+        const line = mk("div", "wl-line" + (s.endedAt ? "" : " live"));
+        line.append(mk("span", "", (s.endedAt ? "\u2713 " : "\u25cf ") + TYPES[s.type].label + " \u00b7 " + (s.endedAt ? fmtDur(s.minutes) : "now")));
+        const sum = s.endedAt ? sessionSummary(s) : "";
+        if (sum) line.append(mk("span", "wl-sum", sum));
         if (s.endedAt) {
           const rb = mk("button", "linkbtn rm", "Remove");
           rb.type = "button";
-          rb.dataset.act = "rmsess";
           rb.dataset.sid = s.id;
-          line.append(" ", rb);
+          rb.dataset.week = wk;
+          line.append(rb);
         }
-        dl.append(line);
+        day.append(line);
       }
-    });
-  }
-  const dayCtx = n => { const d = n.closest(".day"); return d ? d.dataset.date : null; };
-  const itemCtx = n => { const r = n.closest(".item"); return r ? r.dataset.key : null; };
-  const dayList = $("#dayList");
-  dayList.addEventListener("change", e => {
-    const date = dayCtx(e.target);
-    if (!date) return;
-    const wk = mondayOf(date);
-    if (e.target.dataset.act === "dayon") {
-      const on = e.target.checked;
-      mutateWeek(wk, w => {
-        if (on) { if (!w.plan[date] || !w.plan[date].length) w.plan[date] = [{ id: newId(), type: "ranked", minutes: DEFAULT_MIN.ranked, time: "" }]; }
-        else delete w.plan[date];
-      }, 400);
-      renderWeek(); renderToday();
-      return;
+      log.append(day);
     }
-    const field = e.target.dataset.ifield, id = itemCtx(e.target);
-    if (!field || !id) return;
-    const val = e.target.value;
-    mutateWeek(wk, w => {
-      const it = (w.plan[date] || []).find(i => i.id === id);
-      if (!it) return;
-      if (field === "type" && TYPES[val]) { const wasDefault = it.minutes === DEFAULT_MIN[it.type]; it.type = val; if (wasDefault) it.minutes = DEFAULT_MIN[val]; }
-      else if (field === "minutes") it.minutes = Math.min(720, n0(val));
-      else if (field === "time") it.time = isTime(val) ? val : "";
-    }, 500);
-    renderWeek(); renderToday();
-  });
-  dayList.addEventListener("click", e => {
-    const b = e.target.closest("[data-act]");
-    if (!b) return;
-    const date = dayCtx(b);
-    if (!date) return;
-    const wk = mondayOf(date), act = b.dataset.act;
-    if (act === "rmsess") { armOrRun(b, () => removeSession(wk, b.dataset.sid), "Confirm"); return; }
-    if (act === "additem") mutateWeek(wk, w => { (w.plan[date] = w.plan[date] || []).push({ id: newId(), type: "training", minutes: DEFAULT_MIN.training, time: "" }); }, 400);
-    else if (act === "rmitem") { const id = itemCtx(b); mutateWeek(wk, w => { w.plan[date] = (w.plan[date] || []).filter(i => i.id !== id); if (!w.plan[date].length) delete w.plan[date]; }, 400); }
-    else if (act === "addtime") { const r = b.closest(".item"); r.dataset.timeOpen = "1"; renderWeek(); const t = r.querySelector('[data-ifield="time"]'); if (t) t.focus(); return; }
-    else if (act === "cleartime") { const r = b.closest(".item"), id = itemCtx(b); r.dataset.timeOpen = "0"; mutateWeek(wk, w => { const it = (w.plan[date] || []).find(i => i.id === id); if (it) it.time = ""; }, 400); }
-    else return;
-    renderWeek(); renderToday();
+    if (!log.children.length) log.append(mk("p", "empty", "No sessions yet."));
+  }
+  $("#weekLog").addEventListener("click", e => {
+    const b = e.target.closest("button.rm");
+    if (b) armOrRun(b, () => removeSession(b.dataset.week, b.dataset.sid), "Confirm");
   });
   $("#wkPrev").addEventListener("click", () => { S.wk = addDays(S.wk, -7); renderWeek(); });
   $("#wkNext").addEventListener("click", () => { S.wk = addDays(S.wk, 7); renderWeek(); });
@@ -812,7 +681,7 @@
   function renderRanks() {
     if (!S.me) return;
     const wk = mondayOf(S.today);
-    rankRows($("#rankList"), S.me.ranks, weekStats(getWeek(wk), wk).games);
+    rankRows($("#rankList"), S.me.ranks, weekStats(getWeek(wk)).games);
     $("#rankUpdated").textContent = rankStamp(S.me.ranks);
   }
 
@@ -837,41 +706,28 @@
     renderCoach();
   }
   function rosterIds() {
-    const f = S.teamFilter;
-    return Object.keys(S.roster).filter(id => {
-      const p = S.roster[id];
-      if (p.role === "coach") return f === "all" && !!S.rosterWeeks[id] && weekStats(S.rosterWeeks[id], S.coachWk).hasAny;
-      return f === "all" || p.team === f;
-    }).sort((a, b) => S.roster[a].name.localeCompare(S.roster[b].name, "en", { sensitivity: "base" }));
+    // Every player, plus the coach only in weeks the coach logged something.
+    return Object.keys(S.roster).filter(id => S.roster[id].role === "player" || (!!S.rosterWeeks[id] && S.rosterWeeks[id].sessions.length > 0));
   }
-  function renderTeamTabs() {
-    const box = $("#teamTabs");
-    box.textContent = "";
-    const players = Object.values(S.roster).filter(p => p.role === "player");
-    for (const [k, l] of [["all", "All"]].concat(TEAMS)) {
-      const n = k === "all" ? players.length : players.filter(p => p.team === k).length;
-      const b = mk("button", "tab", l);
-      b.type = "button";
-      b.setAttribute("aria-pressed", String(S.teamFilter === k));
-      b.append(mk("span", "n", String(n)));
-      b.addEventListener("click", () => { S.teamFilter = k; pref.set("team", k); renderCoach(); });
-      box.append(b);
-    }
-  }
+  // Status for the viewed week. Same requirement for everyone.
   function playerStatus(id) {
     const p = S.roster[id], w = S.rosterWeeks[id] || normWeek(null, S.coachWk), wk = S.coachWk, thisWk = mondayOf(S.today);
-    if (p.active && wk === thisWk) return "live";
-    const st = weekStats(w, wk), rows = reqRows(st);
-    if (!st.hasAny && p.createdAt && ymd(new Date(p.createdAt)) > addDays(wk, 6)) return "notyet";
-    if (!st.hasAny) return wk < thisWk ? "missed" : "noplan";
-    if (rows.length && rows.every(r => r.done >= r.target)) return "done";
-    if (wk < thisWk) return "missed";
-    if (wk > thisWk) return rows.some(r => r.planned < r.target) ? "behind" : "onpace";
-    return rows.some(r => r.planned < r.target || r.done + r.remain < r.target) ? "behind" : "onpace";
+    const st = weekStats(w), rows = reqRows(st), left = remaining(rows);
+    let g = "open";
+    if (p.active && wk === thisWk) g = "live";
+    else if (rows.length && !left) g = "done";
+    else if (p.createdAt && ymd(new Date(p.createdAt)) > addDays(wk, 6)) g = "notyet";
+    else if (wk < thisWk) g = "missed";
+    return { g, left, st };
   }
-  // Roster: one row per player — name, hours, status in words. Whoever needs attention sorts first.
-  const STATUS_LABEL = { live: "In session", behind: "Behind", onpace: "On pace", noplan: "No plan", done: "Done", missed: "Missed", notyet: "New" };
-  const STATUS_ORDER = ["live", "behind", "onpace", "noplan", "done", "missed", "notyet"];
+  const STATUS_RANK = { live: 0, open: 1, missed: 1, done: 2, notyet: 3 };
+  function statusLabel(x) {
+    if (x.g === "live") return "In session";
+    if (x.g === "done") return "Done";
+    if (x.g === "missed") return "Missed";
+    if (x.g === "notyet") return "New";
+    return x.left + " left";
+  }
 
   /* ---------- Coach: render ---------- */
   function renderCoach() {
@@ -879,40 +735,31 @@
     const thisWk = mondayOf(S.today);
     $("#cwLabel").textContent = weekLabel(S.coachWk);
     $("#cwThis").hidden = S.coachWk === thisWk;
-    renderTeamTabs();
     const ids = rosterIds();
     $("#rosterEmpty").hidden = !S.rosterLoaded || ids.length > 0;
-    $("#rosterEmpty").textContent = S.teamFilter === "all" ? "No players yet." : "No one on " + teamName(S.teamFilter) + ".";
     const box = $("#rosterList");
     box.hidden = !ids.length;
     box.textContent = "";
     if (ids.length) {
       const head = mk("div", "rrow rh");
-      head.append(mk("span", "", "Player"), mk("span", "", "Hours"), mk("span", "", "Status"));
+      head.append(mk("span", "", "Player"), mk("span", "", "Ranked"), mk("span", "", "Training"), mk("span", "", "Status"));
       box.append(head);
     }
-    const target = Math.round(S.settings.targets.hours * 60);
-    const rows = ids.map(id => ({ id, g: playerStatus(id) })).sort((x, y) => STATUS_ORDER.indexOf(x.g) - STATUS_ORDER.indexOf(y.g));
-    for (const { id, g } of rows) {
-      const p = S.roster[id];
-      const st = weekStats(S.rosterWeeks[id] || normWeek(null, S.coachWk), S.coachWk);
+    const T = S.settings.targets;
+    const rows = ids.map(id => Object.assign({ id }, playerStatus(id))).sort((x, y) =>
+      STATUS_RANK[x.g] - STATUS_RANK[y.g] || y.left - x.left || S.roster[x.id].name.localeCompare(S.roster[y.id].name, "en", { sensitivity: "base" }));
+    const cell = (done, target) => mk("span", "rc" + (target > 0 && done >= target ? " met" : ""), target > 0 ? done + "/" + target : String(done));
+    for (const x of rows) {
+      const p = S.roster[x.id];
       const b = mk("button", "rrow");
       b.type = "button";
-      if (S.sel === id) b.setAttribute("aria-current", "true");
+      if (S.sel === x.id) b.setAttribute("aria-current", "true");
       const nm = mk("span", "rname", p.name);
-      if (S.teamFilter === "all" && p.team) nm.append(mk("span", "bteam", teamName(p.team)));
-      const hcell = mk("span", "rhours", target > 0 ? hrs(st.dInd) + " / " + hrs(target) + " h" : hrs(st.dInd) + " h");
-      if (target > 0) {
-        const bar = mk("span", "mini" + (st.dInd >= target ? " full" : ""));
-        const fill = mk("i");
-        fill.style.width = Math.min(100, (st.dInd / target) * 100) + "%";
-        bar.append(fill);
-        hcell.append(bar);
-      }
-      const pill = mk("span", "pill " + g, STATUS_LABEL[g]);
-      if (g === "live") pill.title = TYPES[p.active.type].label + " · " + fmtDur(elapsedMin(p.active.startedAt));
-      b.append(nm, hcell, pill);
-      b.addEventListener("click", () => { S.sel = id; renderCoach(); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
+      if (p.team) nm.append(mk("span", "bteam", teamName(p.team)));
+      const pill = mk("span", "pill " + x.g, statusLabel(x));
+      if (x.g === "live") pill.title = TYPES[p.active.type].label + " \u00b7 " + fmtDur(elapsedMin(p.active.startedAt));
+      b.append(nm, cell(x.st.ranked, T.ranked), cell(x.st.training, T.training), pill);
+      b.addEventListener("click", () => { S.sel = x.id; renderCoach(); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
       box.append(b);
     }
     renderPlayerDetail();
@@ -939,7 +786,7 @@
     stats.textContent = "";
     if (p.active && S.coachWk === mondayOf(S.today)) stats.append(mk("p", "status err", "● " + TYPES[p.active.type].label + " · since " + fmtClock(p.active.startedAt)));
     const w = S.rosterWeeks[id] || normWeek(null, S.coachWk);
-    const st = weekStats(w, S.coachWk);
+    const st = weekStats(w);
     const ranks = mk("ul", "rank-list");
     rankRows(ranks, p.ranks, st.games);
     stats.append(ranks);
@@ -950,15 +797,11 @@
     const reqs = mk("div", "reqs");
     renderReqs(reqs, rows);
     stats.append(reqs);
-    const [vt, vc] = verdictText(rows);
-    if (vt && st.hasAny) stats.append(mk("p", vc, vt));
     for (const d of weekDates(S.coachWk)) {
-      const items = w.plan[d] || [];
       const ses = w.sessions.filter(s => s.date === d).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
-      if (!items.length && !ses.length) continue;
+      if (!ses.length) continue;
       const dayBox = mk("div", "pd-day");
       dayBox.append(mk("h4", "", fmtDate(d, { weekday: "long", month: "short", day: "numeric" })));
-      if (items.length) dayBox.append(mk("p", "pd-line muted", items.map(i => TYPES[i.type].label + " " + fmtDur(i.minutes) + (i.time ? " · " + fmtTime(i.time) : "")).join("  ·  ")));
       for (const s of ses) {
         const sb = mk("div", "pd-sess" + (s.endedAt ? "" : " live"));
         sb.append(mk("p", "pd-line", (s.endedAt ? "✓ " : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") : "since " + fmtClock(s.startedAt))));
@@ -1080,7 +923,7 @@
     }
     if (p.role === "player") {
       const tr = mk("label", "pd-team");
-      tr.append(mk("span", "lbl", "Roster"));
+      tr.append(mk("span", "lbl", "Team"));
       const sel = mk("select");
       sel.id = "pdTeam";
       TEAMS.forEach(([k, l]) => sel.append(new Option(l, k)));
@@ -1114,7 +957,7 @@
   $("#addOpen").addEventListener("click", () => {
     const f = $("#addForm");
     f.hidden = !f.hidden;
-    if (!f.hidden) { $("#addPw").value = genPassword(); $("#addTeam").value = S.teamFilter !== "all" ? S.teamFilter : "varsity"; setStatus($("#addStatus"), ""); $("#addName").focus(); }
+    if (!f.hidden) { $("#addPw").value = genPassword(); $("#addTeam").value = "varsity"; setStatus($("#addStatus"), ""); $("#addName").focus(); }
   });
   $("#addGen").addEventListener("click", () => { $("#addPw").value = genPassword(); });
   $("#addCancel").addEventListener("click", () => { $("#addForm").hidden = true; });
@@ -1140,36 +983,36 @@
   $("#cwNext").addEventListener("click", () => coachWeek(addDays(S.coachWk, 7)));
   $("#cwThis").addEventListener("click", () => coachWeek(mondayOf(S.today)));
 
-  // Team settings
+  // Settings
   (function buildGoalGrid() {
     const g = $("#goalGrid");
     for (const p of PL) g.insertAdjacentHTML("beforeend",
       '<label for="g-' + p.key + '-min">' + p.short + ' min<input type="number" id="g-' + p.key + '-min" min="0" max="60" step="1"></label>' +
       '<label for="g-' + p.key + '-max">' + p.short + ' max<input type="number" id="g-' + p.key + '-max" min="0" max="60" step="1"></label>');
   })();
-  function renderTeamForm(force) {
+  function renderSettingsForm(force) {
     if (!S.me || S.me.role !== "coach" || (S.settingsDirty && !force)) return;
     const s = S.settings;
     setVal($("#setTitle"), s.title);
-    setVal($("#setHours"), String(s.targets.hours));
-    setVal($("#setMinDays"), String(s.targets.minDays));
+    setVal($("#setRanked"), String(s.targets.ranked));
+    setVal($("#setTraining"), String(s.targets.training));
     for (const p of PL) {
       const g = s.rankedGoals[p.key];
       setVal($("#g-" + p.key + "-min"), g.min === null ? "" : String(g.min));
       setVal($("#g-" + p.key + "-max"), g.max === null ? "" : String(g.max));
     }
   }
-  $("#teamForm").addEventListener("input", () => { S.settingsDirty = true; setStatus($("#setStatus"), ""); });
-  $("#teamForm").addEventListener("submit", async e => {
+  $("#settingsForm").addEventListener("input", () => { S.settingsDirty = true; setStatus($("#setStatus"), ""); });
+  $("#settingsForm").addEventListener("submit", async e => {
     e.preventDefault();
     const goals = {};
     for (const p of PL) goals[p.key] = { min: $("#g-" + p.key + "-min").value, max: $("#g-" + p.key + "-max").value };
-    const draft = { title: $("#setTitle").value.trim(), targets: { hours: $("#setHours").value, minDays: $("#setMinDays").value }, rankedGoals: goals };
+    const draft = { title: $("#setTitle").value.trim(), targets: { ranked: $("#setRanked").value, training: $("#setTraining").value }, rankedGoals: goals };
     try {
       const r = await api("PUT", "coach/settings", { settings: draft });
       S.settings = normSettings(r.settings);
       S.settingsDirty = false;
-      renderTeamForm(true);
+      renderSettingsForm(true);
       setStatus($("#setStatus"), "Saved.", "ok");
       renderAll();
     } catch (err) { setStatus($("#setStatus"), err.message, "err"); }
@@ -1191,7 +1034,7 @@
     renderTaskbar();
     if (!app) return;
     renderToday(); renderWeek(); renderRanks();
-    if (coach) { renderCoach(); renderTeamForm(false); }
+    if (coach) { renderCoach(); renderSettingsForm(false); }
   }
 
   /* ---------- Load + refresh ---------- */

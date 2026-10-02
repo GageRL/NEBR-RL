@@ -1,6 +1,6 @@
 # Nebraska Esports training hub
 
-Players plan their personal training week (Ranked Sessions and Training), check in to sessions and reflect. The coach manages logins, sees the roster, and sets weekly requirements.
+Players check in to Ranked Sessions and Training, log games, and reflect. Everyone has the same weekly requirement (default 3 Ranked Sessions and 2 Training sessions, set in the coach's Settings). The coach creates logins, tags each player Varsity, White, or Black, and sees everyone's week on the roster.
 
 Static site in `public/`, one Cloudflare Pages Function in `functions/api/`, and a Cloudflare D1 database. No build step.
 

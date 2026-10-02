@@ -18,7 +18,7 @@ const TYPES = ["ranked", "training"];
 const TEAMS = ["varsity", "white", "black"];
 const DEFAULT_SETTINGS = {
   title: "Nebraska Esports",
-  targets: { hours: 15, minDays: 0 },
+  targets: { ranked: 3, training: 2 },
   rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
 };
 
@@ -154,8 +154,8 @@ function normSettings(raw) {
   if (!isPlain(raw)) return s;
   if (typeof raw.title === "string" && raw.title.trim()) s.title = raw.title.trim().replace(/\s+/g, " ").slice(0, 60);
   const t = isPlain(raw.targets) ? raw.targets : {};
-  s.targets.hours = Math.round(numIn(t.hours, s.targets.hours, 80) * 2) / 2;
-  s.targets.minDays = Math.round(numIn(t.minDays, s.targets.minDays, 7));
+  s.targets.ranked = Math.round(numIn(t.ranked, s.targets.ranked, 14));
+  s.targets.training = Math.round(numIn(t.training, s.targets.training, 14));
   if (isPlain(raw.rankedGoals)) {
     for (const p of PL) {
       const g = isPlain(raw.rankedGoals[p]) ? raw.rankedGoals[p] : {};
@@ -274,7 +274,7 @@ function mergeWeek(stored, incoming, removeIds, now) {
     out.push(next);
   }
   out.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
-  return { plan: isPlain(incoming.plan) ? incoming.plan : {}, sessions: out, removed: Array.from(removed).slice(-300) };
+  return { sessions: out, removed: Array.from(removed).slice(-300) };
 }
 
 /* ---------- request plumbing ---------- */
