@@ -216,7 +216,7 @@ function normFocus(list) {
 function pub(u) {
   return {
     id: u.id, name: u.username, role: u.role,
-    team: TEAMS.includes(u.team) ? u.team : null,
+    team: TEAMS.includes(u.team) ? u.team : (u.role === "player" ? "varsity" : null),
     trackerUrl: u.tracker_url || "",
     ranks: normRanks(parse(u.ranks, {})),
     active: parse(u.active, null),
@@ -303,6 +303,7 @@ export async function onRequest({ request, env, params }) {
       await db.batch(SCHEMA.map(s => db.prepare(s)));
       const cols = await db.prepare("PRAGMA table_info(users)").all();
       if (!(cols.results || []).some(c => c.name === "team")) await db.prepare("ALTER TABLE users ADD COLUMN team TEXT").run();
+      await db.prepare("UPDATE users SET team = 'varsity' WHERE role = 'player' AND (team IS NULL OR team NOT IN ('varsity', 'white', 'black'))").run();
       schemaReady = true;
     }
     const segs = (Array.isArray(params.path) ? params.path : [params.path]).filter(Boolean);
@@ -382,6 +383,21 @@ async function route(db, req, method, segs, body, user) {
   if (key === "GET weeks") {
     const { results } = await db.prepare("SELECT week, data FROM weeks WHERE user_id = ? ORDER BY week DESC LIMIT 80").bind(user.id).all();
     return json({ weeks: results.map(r => ({ week: r.week, data: parse(r.data, {}) })) });
+  }
+  if (method === "GET" && a === "leaderboard" && b && !c) {
+    // Ranked games logged this week, per player. Names and counts only.
+    const wk = weekId(b);
+    const { results } = await db.prepare("SELECT u.username AS name, w.data AS data FROM users u LEFT JOIN weeks w ON w.user_id = u.id AND w.week = ? WHERE u.role = 'player'").bind(wk).all();
+    const rows = results.map(r => {
+      const d = parse(r.data, {});
+      let games = 0;
+      for (const s of Array.isArray(d.sessions) ? d.sessions : []) {
+        if (!isPlain(s) || !isPlain(s.games)) continue;
+        for (const p of PL) { const g = s.games[p]; if (isPlain(g)) games += (Number(g.w) || 0) + (Number(g.l) || 0); }
+      }
+      return { name: r.name, games };
+    }).sort((x, y) => y.games - x.games || x.name.localeCompare(y.name, "en", { sensitivity: "base" }));
+    return json({ week: wk, rows });
   }
   if (method === "PUT" && a === "weeks" && b && !c) {
     const wk = weekId(b);

@@ -55,6 +55,11 @@
             <p class="fine" id="rankUpdated"></p>
           </div>
         </section>
+
+        <section class="win" id="winBoard" aria-labelledby="tBoard">
+          <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tBoard">Leaderboard · This week</h2><button type="button" class="tmin" aria-label="Minimize Leaderboard" aria-expanded="true">_</button></div>
+          <div class="wbody"><ol class="board" data-board></ol></div>
+        </section>
       </div>
 
       <div class="col">
@@ -101,12 +106,14 @@
               <p class="status" id="addStatus" role="status"></p>
               <div class="row end"><button type="button" class="btn" id="addCancel">Close</button><button type="submit" class="btn primary">Add</button></div>
             </form>
-            <div class="legend" aria-label="Status key">
-              <span><i class="bstat live"></i>In session</span><span><i class="bstat behind"></i>Behind</span><span><i class="bstat onpace"></i>On pace</span><span><i class="bstat done"></i>Done</span><span><i class="bstat noplan"></i>No plan</span>
-            </div>
             <div class="roster" id="rosterList"></div>
             <p class="empty" id="rosterEmpty">No players yet.</p>
           </div>
+        </section>
+
+        <section class="win" id="winBoardC" aria-labelledby="tBoardC">
+          <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tBoardC">Leaderboard · This week</h2><button type="button" class="tmin" aria-label="Minimize Leaderboard" aria-expanded="true">_</button></div>
+          <div class="wbody"><ol class="board" data-board></ol></div>
         </section>
       </div>
       <div class="col">

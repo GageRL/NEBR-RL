@@ -24,7 +24,13 @@
     rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
   };
   const LONG_SESSION_MIN = 360;
-  const REFL = [["well", "Went well"], ["cost", "Cost me games"], ["next", "Work on next"]];
+  const REFL = [["well", ""], ["cost", ""], ["next", ""]];
+  // Reflection prompts fit the kind of session. Same three slots, different questions.
+  const REFL_BY_TYPE = {
+    ranked: { notes: "Notes", q: [["well", "What went well"], ["cost", "What cost me games"], ["next", "Work on next"]] },
+    training: { notes: "What I did", q: [["well", "What clicked"], ["cost", "Still struggling with"], ["next", "Next session focus"]] }
+  };
+  const reflFor = t => REFL_BY_TYPE[t] || REFL_BY_TYPE.ranked;
   const TEAMS = [["varsity", "Varsity"], ["white", "White"], ["black", "Black"]];
   const teamName = t => { const x = TEAMS.find(p => p[0] === t); return x ? x[1] : ""; };
 
@@ -148,7 +154,7 @@
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
     teamFilter: ["all", "varsity", "white", "black"].includes(pref.get("team")) ? pref.get("team") : "all",
     removals: {},
-    undo: [], saveErr: null, settingsDirty: false
+    undo: [], saveErr: null, settingsDirty: false, board: null
   };
 
   /* ---------- Saving ---------- */
@@ -187,8 +193,31 @@
       if (ok) S.saveErr = null;
       if (again.has(key)) { again.delete(key); flush(key); return; }
       if (ok && !timers[key]) dirty.delete(key);
+      if (ok && key.startsWith("w:")) scheduleBoard();
       renderConn();
     }
+  }
+  /* ---------- Leaderboard (ranked games logged this week) ---------- */
+  let boardTimer = null;
+  function scheduleBoard() { clearTimeout(boardTimer); boardTimer = setTimeout(loadBoard, 1500); }
+  async function loadBoard() {
+    if (!S.me) return;
+    try { const r = await api("GET", "leaderboard/" + mondayOf(S.today)); S.board = Array.isArray(r.rows) ? r.rows : []; }
+    catch (_) { return; }
+    renderBoard();
+  }
+  function renderBoard() {
+    const me = S.me ? S.me.name.toLowerCase() : "";
+    document.querySelectorAll("[data-board]").forEach(list => {
+      list.textContent = "";
+      if (!S.board) return;
+      if (!S.board.length) { list.append(mk("li", "none", "No players yet")); return; }
+      for (const r of S.board) {
+        const li = mk("li", String(r.name).toLowerCase() === me ? "me" : "");
+        li.append(mk("span", "bn", r.name), mk("span", "bg", String(r.games)));
+        list.append(li);
+      }
+    });
   }
   function flushAll() { for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; flush(k); } }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushAll(); else if (S.me) refresh(); });
@@ -299,7 +328,7 @@
       add("My Training", "view", S.view === "player", () => setView("player"));
       box.append(mk("span", "tsep"));
     }
-    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Player", "#winPlayer"], ["Team", "#winTeam"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Ranks", "#winRanks"]];
+    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Player", "#winPlayer"], ["Board", "#winBoardC"], ["Team", "#winTeam"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Ranks", "#winRanks"], ["Board", "#winBoard"]];
     for (const [label, sel] of secs) add(label, "sec", null, () => showWin(sel));
     add(S.me.name || "Account", "acct", null, openAccount);
   }
@@ -335,7 +364,7 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.needsSetup = false;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.needsSetup = false;
     setStatus($("#authStatus"), "Signed out. Sign on again.", "err");
     renderAll();
   }
@@ -359,7 +388,7 @@
   $("#signOff").addEventListener("click", async () => {
     flushAll();
     try { await api("POST", "logout", {}); } catch (_) {}
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null;
     $("#winAccount").hidden = true;
     setStatus($("#authStatus"), "");
     await boot();
@@ -438,7 +467,7 @@
       '<div class="fld sec-focus"><span class="lbl">Focus</span><div class="chips"></div>' +
       '<form class="addf" data-form="addfocus"><input type="text" maxlength="30" placeholder="Add" aria-label="Add a focus area"><button type="submit" class="btn sm">+</button></form></div>' +
       '<label class="fld"><span class="lbl lbl-did">Notes</span><textarea rows="2" data-sfield="did"></textarea></label>' +
-      '<div class="refl">' + REFL.map(([k, l]) => '<label class="fld"><span class="lbl">' + l + '</span><textarea rows="2" data-sfield="' + k + '"></textarea></label>').join("") + '</div>' +
+      '<div class="refl">' + REFL.map(([k]) => '<label class="fld"><span class="lbl rq" data-k="' + k + '"></span><textarea rows="2" data-sfield="' + k + '"></textarea></label>').join("") + '</div>' +
       '<p class="fine">Sessions lock at check out.</p>' +
       '<div class="card-actions"><button type="button" class="btn primary" data-act="checkout">Check out</button></div>';
     buildCounters(c.querySelector(".ctrs"));
@@ -456,6 +485,9 @@
     c.querySelector(".sec-warm").hidden = !(isRanked || isTrain);
     c.querySelectorAll(".sec-ranked").forEach(x => { x.hidden = !isRanked; });
     c.querySelector(".sec-focus").hidden = !isTrain;
+    const rf = reflFor(a.type);
+    c.querySelector(".lbl-did").textContent = rf.notes;
+    for (const [k, l] of rf.q) c.querySelector('.rq[data-k="' + k + '"]').textContent = l;
     if (s) {
       c.querySelector('[data-sfield="warmup"]').checked = s.warmup;
       if (isRanked) updateCounters(c.querySelector(".ctrs"), s);
@@ -490,8 +522,9 @@
   function fillReadOnly(box, s) {
     box.textContent = "";
     const add = (label, text) => { if (!text || !text.trim()) return; const p = mk("p", "pd-refl"); p.append(mk("b", "", label + ": "), document.createTextNode(text.trim())); box.append(p); };
-    add("Notes", s.did);
-    for (const [k, l] of REFL) add(l, s[k]);
+    const rf = reflFor(s.type);
+    add(rf.notes, s.did);
+    for (const [k, l] of rf.q) add(l, s[k]);
     box.hidden = !box.children.length;
   }
   function sessionSummary(s) {
@@ -836,20 +869,9 @@
     if (wk > thisWk) return rows.some(r => r.planned < r.target) ? "behind" : "onpace";
     return rows.some(r => r.planned < r.target || r.done + r.remain < r.target) ? "behind" : "onpace";
   }
-  const GROUPS = [["live", "In session"], ["behind", "Behind"], ["onpace", "On pace"], ["done", "Done"], ["noplan", "No plan"], ["missed", "Missed"], ["notyet", "Joined later"]];
-  function statusLine(id) {
-    const rows = reqRows(weekStats(S.rosterWeeks[id] || normWeek(null, S.coachWk), S.coachWk));
-    return rows.map(r => r.key === "ind" ? hrs(r.done) + "/" + hrs(r.target) + " h" : r.done + "/" + r.target + " days").join(" · ");
-  }
-  function awayMessage(id) {
-    const w = S.rosterWeeks[id];
-    if (!w) return "";
-    const s = w.sessions.filter(x => x.endedAt && (x.next.trim() || x.well.trim())).sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
-    if (!s) return "";
-    const t = s.next.trim() || s.well.trim();
-    return t.length > 100 ? t.slice(0, 100) + "…" : t;
-  }
-  const closedGroups = new Set((pref.get("closedGroups") || "").split(",").filter(Boolean));
+  // Roster: one row per player — name, hours, status in words. Whoever needs attention sorts first.
+  const STATUS_LABEL = { live: "In session", behind: "Behind", onpace: "On pace", noplan: "No plan", done: "Done", missed: "Missed", notyet: "New" };
+  const STATUS_ORDER = ["live", "behind", "onpace", "noplan", "done", "missed", "notyet"];
 
   /* ---------- Coach: render ---------- */
   function renderCoach() {
@@ -864,36 +886,34 @@
     const box = $("#rosterList");
     box.hidden = !ids.length;
     box.textContent = "";
-    const by = {};
-    for (const id of ids) { const g = playerStatus(id); (by[g] = by[g] || []).push(id); }
-    for (const [g, label] of GROUPS) {
-      const list = by[g];
-      if (!list || !list.length) continue;
-      const grp = mk("div", "rgroup" + (closedGroups.has(g) ? " closed" : ""));
-      const head = mk("button", "rhead");
-      head.type = "button";
-      head.setAttribute("aria-expanded", String(!closedGroups.has(g)));
-      head.append(mk("span", "caret", "▼"), document.createTextNode(label + " (" + list.length + ")"));
-      head.addEventListener("click", () => { if (closedGroups.has(g)) closedGroups.delete(g); else closedGroups.add(g); pref.set("closedGroups", Array.from(closedGroups).join(",")); renderCoach(); });
-      const ul = mk("div", "rlist");
-      for (const id of list) {
-        const p = S.roster[id];
-        const b = mk("button", "buddy");
-        b.type = "button";
-        if (S.sel === id) b.setAttribute("aria-current", "true");
-        const nm = mk("span", "bname", p.name);
-        if (S.teamFilter === "all" && p.team) nm.append(mk("span", "bteam", teamName(p.team)));
-        b.append(mk("i", "bstat " + g), nm);
-        let line = statusLine(id);
-        if (g === "live") line = TYPES[p.active.type].label + " · " + fmtDur(elapsedMin(p.active.startedAt)) + (line ? " · " + line : "");
-        if (line) b.append(mk("span", "bline", line));
-        const away = awayMessage(id);
-        if (away) b.append(mk("span", "baway", away));
-        b.addEventListener("click", () => { S.sel = id; renderCoach(); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
-        ul.append(b);
+    if (ids.length) {
+      const head = mk("div", "rrow rhead");
+      head.append(mk("span", "", "Player"), mk("span", "", "Hours"), mk("span", "", "Status"));
+      box.append(head);
+    }
+    const target = Math.round(S.settings.targets.hours * 60);
+    const rows = ids.map(id => ({ id, g: playerStatus(id) })).sort((x, y) => STATUS_ORDER.indexOf(x.g) - STATUS_ORDER.indexOf(y.g));
+    for (const { id, g } of rows) {
+      const p = S.roster[id];
+      const st = weekStats(S.rosterWeeks[id] || normWeek(null, S.coachWk), S.coachWk);
+      const b = mk("button", "rrow");
+      b.type = "button";
+      if (S.sel === id) b.setAttribute("aria-current", "true");
+      const nm = mk("span", "rname", p.name);
+      if (S.teamFilter === "all" && p.team) nm.append(mk("span", "bteam", teamName(p.team)));
+      const hcell = mk("span", "rhours", target > 0 ? hrs(st.dInd) + " / " + hrs(target) + " h" : hrs(st.dInd) + " h");
+      if (target > 0) {
+        const bar = mk("span", "mini" + (st.dInd >= target ? " full" : ""));
+        const fill = mk("i");
+        fill.style.width = Math.min(100, (st.dInd / target) * 100) + "%";
+        bar.append(fill);
+        hcell.append(bar);
       }
-      grp.append(head, ul);
-      box.append(grp);
+      const pill = mk("span", "pill " + g, STATUS_LABEL[g]);
+      if (g === "live") pill.title = TYPES[p.active.type].label + " · " + fmtDur(elapsedMin(p.active.startedAt));
+      b.append(nm, hcell, pill);
+      b.addEventListener("click", () => { S.sel = id; renderCoach(); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
+      box.append(b);
     }
     renderPlayerDetail();
   }
@@ -945,8 +965,9 @@
         const sum = sessionSummary(s);
         if (sum) sb.append(mk("p", "pd-line muted", sum));
         const addRefl = (label, text) => { if (!text.trim()) return; const r = mk("p", "pd-refl"); r.append(mk("b", "", label + ": "), document.createTextNode(text.trim())); sb.append(r); };
-        addRefl("Notes", s.did);
-        for (const [k, l] of REFL) addRefl(l, s[k]);
+        const rf = reflFor(s.type);
+        addRefl(rf.notes, s.did);
+        for (const [k, l] of rf.q) addRefl(l, s[k]);
         const rrow = mk("div", "row");
         const rb = mk("button", "btn sm danger", "Remove");
         rb.type = "button";
@@ -1201,6 +1222,7 @@
     S.phase = "app";
     S.view = S.me.role === "coach" ? (pref.get("view") === "player" ? "player" : "coach") : "player";
     renderAll();
+    loadBoard();
     if (S.me.role === "coach") loadCoach();
   }
   let refreshing = false;
@@ -1212,6 +1234,7 @@
       if (!S.settingsDirty) S.settings = normSettings(st.settings);
       await loadMine();
       renderAll();
+      loadBoard();
       if (S.me.role === "coach") await loadCoach();
     } catch (_) {}
     finally { refreshing = false; }
@@ -1232,7 +1255,7 @@
       if (followC) S.coachWk = mondayOf(t);
     }
     if (document.visibilityState !== "visible") return;
-    if (S.view === "coach") loadCoach();
+    if (S.view === "coach") { loadCoach(); if (ticks % 2 === 0) loadBoard(); }
     else { renderToday(); renderWeek(); }
     if (ticks % 10 === 0) refresh();
   }, 30000);
