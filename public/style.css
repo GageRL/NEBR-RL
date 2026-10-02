@@ -23,7 +23,7 @@
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
-html{background:var(--cream)}
+html{background:var(--cream);scroll-padding-top:calc(env(safe-area-inset-top,0px) + 56px)}
 body{margin:0;min-height:100vh;background:var(--cream);color:var(--scarlet);font:400 14px/1.5 var(--text);-webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased}
 h1,h2,h3,h4,p,ul,ol{margin:0}
 ul,ol{padding:0;list-style:none}
@@ -322,6 +322,13 @@ button.rrow[aria-current="true"]:hover{background:var(--alizarin)}
 .pd-refl{font-size:13px;font-style:italic;white-space:pre-wrap;overflow-wrap:anywhere}
 .pd-refl b,.wl-note b{font-weight:600;font-style:normal}
 .note-ed{display:grid;gap:8px}
+.sess-ed{margin-top:6px;border-style:solid;border-color:var(--scarlet)}
+.sess-ed .chk{font-size:14px}
+.ed-gl{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 12px}
+.ed-pl{font:600 14px var(--display);text-transform:uppercase;letter-spacing:.04em}
+.ed-gl label{display:flex;align-items:center;gap:6px;font:600 12px var(--text)}
+.ed-gl input{width:76px}
+@media (max-width:480px){.sess-ed .ef-grid label:nth-child(-n+2){grid-column:1 / -1}}
 .ro{display:grid;gap:4px}
 #pdStats{gap:14px}
 #pdStats > .status.err{font-family:var(--display);text-transform:uppercase;letter-spacing:.04em;font-size:14px}

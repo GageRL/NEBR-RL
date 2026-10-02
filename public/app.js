@@ -128,7 +128,8 @@
       minutes: Math.min(1440, n0(s.minutes)), edited: !!s.edited, warmup: !!s.warmup, games: g,
       focuses: Array.isArray(s.focuses) ? s.focuses.filter(f => typeof f === "string").slice(0, 20) : [],
       did: str(s.did), well: str(s.well), cost: str(s.cost), next: str(s.next),
-      coachNote: str(s.coachNote, 1000), coachNoteAt: typeof s.coachNoteAt === "string" ? s.coachNoteAt : null
+      coachNote: str(s.coachNote, 1000), coachNoteAt: typeof s.coachNoteAt === "string" ? s.coachNoteAt : null,
+      coachEditedAt: typeof s.coachEditedAt === "string" ? s.coachEditedAt : null
     };
   }
   function normWeek(raw, id) {
@@ -144,7 +145,7 @@
     settings: normSettings(null), me: null, weeks: {},
     view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
-    removals: {}, myHist: [], hist: {}, noteOpen: null, noteDraft: {},
+    removals: {}, myHist: [], hist: {}, noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
     undo: [], saveErr: null, settingsDirty: false, board: null
   };
 
@@ -337,7 +338,7 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.needsSetup = false;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.needsSetup = false;
     setStatus($("#authStatus"), "Signed out. Sign on again.", "err");
     renderAll();
   }
@@ -361,7 +362,7 @@
   $("#signOff").addEventListener("click", async () => {
     flushAll();
     try { await api("POST", "logout", {}); } catch (_) {}
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {};
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null;
     $("#winAccount").hidden = true;
     setStatus($("#authStatus"), "");
     await boot();
@@ -509,7 +510,7 @@
     c.dataset.week = wk;
     c.dataset.sid = s.id;
     c.querySelector(".ctype").textContent = TYPES[s.type].label;
-    c.querySelector(".cmeta").textContent = fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "");
+    c.querySelector(".cmeta").textContent = fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") + (s.coachEditedAt ? " · coach edited" : "");
     const sum = sessionSummary(s), sumEl = c.querySelector(".csum");
     sumEl.textContent = sum;
     sumEl.hidden = !sum;
@@ -861,7 +862,7 @@
       body.append(mk("p", "empty", "Select a player."));
       return;
     }
-    if (S.pdFor !== id) { buildPlayerDetail(body, id); S.pdFor = id; S.noteOpen = null; S.noteDraft = {}; }
+    if (S.pdFor !== id) { buildPlayerDetail(body, id); S.pdFor = id; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; }
     $("#tPlayer").textContent = p.name;
     $("#pdName").textContent = p.name;
     const ts = $("#pdTeam");
@@ -872,6 +873,8 @@
     const stats = $("#pdStats");
     // Keep an open note editor's focus and cursor through the 30-second refresh.
     const fe = document.activeElement, focusNote = fe && fe.dataset && fe.dataset.noteFor ? { sid: fe.dataset.noteFor, a: fe.selectionStart, b: fe.selectionEnd } : null;
+    const focusEdit = S.editEl && fe && S.editEl.contains(fe) ? { el: fe, a: fe.selectionStart, b: fe.selectionEnd } : null;
+    let editFound = false;
     stats.textContent = "";
     if (p.active && S.coachWk === mondayOf(S.today)) stats.append(mk("p", "status err", "● " + TYPES[p.active.type].label + " · since " + fmtClock(p.active.startedAt)));
     const w = S.rosterWeeks[id] || normWeek(null, S.coachWk);
@@ -894,7 +897,15 @@
       for (const s of ses) {
         const ok = counts(s);
         const sb = mk("div", "pd-sess" + (s.endedAt ? (ok ? "" : " nc") : " live"));
-        sb.append(mk("p", "pd-line", (s.endedAt ? (ok ? "✓ " : "– ") : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") : "since " + fmtClock(s.startedAt))));
+        sb.append(mk("p", "pd-line", (s.endedAt ? (ok ? "✓ " : "– ") : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") + (s.coachEditedAt ? " · coach edited" : "") : "since " + fmtClock(s.startedAt))));
+        if (s.endedAt && S.editOpen === s.id) {
+          // The open editor keeps its own form across the 30-second refresh.
+          editFound = true;
+          if (!S.editEl || S.editEl.dataset.sid !== s.id || S.editEl.dataset.wk !== S.coachWk) S.editEl = buildEditForm(id, S.coachWk, s);
+          sb.append(S.editEl);
+          dayBox.append(sb);
+          continue;
+        }
         const sum = sessionSummary(s);
         if (sum) sb.append(mk("p", "pd-line muted", sum));
         if (s.endedAt && !ok) sb.append(mk("p", "nc", "Doesn't count: " + shortReason(s)));
@@ -926,6 +937,14 @@
         } else if (s.coachNote) {
           const n = mk("p", "pd-refl cn"); n.append(mk("b", "", "Your note: "), document.createTextNode(s.coachNote)); sb.append(n);
         }
+        if (s.endedAt) {
+          const eb = mk("button", "linkbtn", "Edit session"); eb.type = "button";
+          eb.addEventListener("click", () => {
+            S.editOpen = sid; S.editEl = null; S.noteOpen = null; renderPlayerDetail();
+            const first = S.editEl && S.editEl.querySelector("select"); if (first) first.focus();
+          });
+          rrow.append(eb);
+        }
         if (s.endedAt && S.noteOpen !== sid) {
           const nb = mk("button", "linkbtn", s.coachNote ? "Edit note" : "Add note"); nb.type = "button";
           nb.addEventListener("click", () => {
@@ -948,10 +967,96 @@
       stats.append(dayBox);
     }
     if (!st.hasAny) stats.append(mk("p", "empty", "Nothing this week."));
+    if (S.editOpen && !editFound) { S.editOpen = null; S.editEl = null; }
+    if (focusEdit && focusEdit.el.isConnected) { focusEdit.el.focus(); try { focusEdit.el.setSelectionRange(focusEdit.a, focusEdit.b); } catch (_) {} }
     if (focusNote) {
       const t = stats.querySelector('[data-note-for="' + focusNote.sid + '"]');
       if (t) { t.focus(); try { t.setSelectionRange(focusNote.a, focusNote.b); } catch (_) {} }
     }
+  }
+
+  /* Coach edit of a finished session: type, day, times, warmup, games, focus areas and the player's notes. */
+  function hhmm(iso) { const d = new Date(iso); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+  function buildEditForm(id, wk, s) {
+    const p = S.roster[id];
+    const f = mk("form", "sub sess-ed");
+    f.noValidate = true;
+    f.dataset.sid = s.id;
+    f.dataset.wk = wk;
+    f.innerHTML =
+      "<h3>Edit session</h3>" +
+      '<div class="ef-grid">' +
+      '<label>Type<select name="type"><option value="ranked">' + TYPES.ranked.label + '</option><option value="training">' + TYPES.training.label + "</option></select></label>" +
+      '<label>Day<select name="date">' + weekDates(wk).map(d => '<option value="' + d + '">' + fmtDate(d, { weekday: "short", month: "short", day: "numeric" }) + "</option>").join("") + "</select></label>" +
+      '<label>Start<input type="time" name="start"></label>' +
+      '<label>End<input type="time" name="end"></label></div>' +
+      '<label class="chk"><input type="checkbox" name="warmup"> Warmup</label>' +
+      '<fieldset class="ef ed-games"><legend>Games</legend><div class="ed-gl">' +
+      PL.map(q => '<span class="ed-pl">' + q.name + '</span><label>W<input type="number" min="0" max="300" name="' + q.key + '-w" aria-label="' + q.short + ' wins"></label><label>L<input type="number" min="0" max="300" name="' + q.key + '-l" aria-label="' + q.short + ' losses"></label>').join("") +
+      "</div></fieldset>" +
+      '<div class="fld ed-focus"><span class="lbl">Focus</span><div class="chips"></div></div>' +
+      '<label class="fld"><span class="lbl ed-did"></span><textarea rows="2" name="did" maxlength="4000"></textarea></label>' +
+      REFL.map(([k]) => '<label class="fld"><span class="lbl ed-q" data-k="' + k + '"></span><textarea rows="2" name="' + k + '" maxlength="4000"></textarea></label>').join("") +
+      '<p class="status" role="status"></p>' +
+      '<div class="row end"><button type="button" class="btn" data-x>Cancel</button><button type="submit" class="btn primary">Save session</button></div>';
+    const F = n => f.elements.namedItem(n);
+    F("type").value = s.type;
+    F("date").value = s.date;
+    F("start").value = hhmm(s.startedAt);
+    F("end").value = hhmm(s.endedAt);
+    F("warmup").checked = s.warmup;
+    for (const q of PL) { F(q.key + "-w").value = String(s.games[q.key].w); F(q.key + "-l").value = String(s.games[q.key].l); }
+    F("did").value = s.did;
+    for (const [k] of REFL) F(k).value = s[k];
+    // Focus chips: the standard list, this player's own additions, and anything already on the session.
+    const chips = f.querySelector(".chips"), seen = new Map();
+    DEFAULT_FOCUS.concat(p ? p.customFocus : [], s.focuses).forEach(x => { const k = String(x).trim().toLowerCase(); if (k && !seen.has(k)) seen.set(k, String(x).trim()); });
+    for (const name of seen.values()) {
+      const b = mk("button", "chip", name); b.type = "button"; b.dataset.f = name;
+      b.setAttribute("aria-pressed", String(s.focuses.includes(name)));
+      b.addEventListener("click", () => b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true")));
+      chips.append(b);
+    }
+    const syncType = () => {
+      const t = F("type").value, rf = reflFor(t);
+      f.querySelector(".ed-games").hidden = t !== "ranked";
+      f.querySelector(".ed-focus").hidden = t !== "training";
+      f.querySelector(".ed-did").textContent = rf.notes;
+      for (const [k, l] of rf.q) f.querySelector('.ed-q[data-k="' + k + '"]').textContent = l;
+    };
+    F("type").addEventListener("change", syncType);
+    syncType();
+    const status = f.querySelector(".status");
+    f.querySelector("[data-x]").addEventListener("click", () => { S.editOpen = null; S.editEl = null; renderPlayerDetail(); });
+    f.addEventListener("submit", async ev => {
+      ev.preventDefault();
+      const date = F("date").value, st = F("start").value, en = F("end").value;
+      if (!/^\d{1,2}:\d{2}$/.test(st) || !/^\d{1,2}:\d{2}$/.test(en)) { setStatus(status, "Enter a start and end time.", "err"); return; }
+      const at = (d, hm) => { const x = parseYmd(d); const [h, m] = hm.split(":").map(Number); x.setHours(h, m, 0, 0); return x; };
+      const start = at(date, st), end = at(date, en);
+      if (end <= start) end.setDate(end.getDate() + 1); // ran past midnight
+      const startSame = date === s.date && st === hhmm(s.startedAt), endSame = startSame && en === hhmm(s.endedAt);
+      if (!endSame && end.getTime() > Date.now() + 60000) { setStatus(status, "End time can't be in the future.", "err"); return; }
+      const games = {};
+      for (const q of PL) games[q.key] = { w: n0(F(q.key + "-w").value), l: n0(F(q.key + "-l").value) };
+      const session = {
+        type: F("type").value, date,
+        startedAt: startSame ? s.startedAt : start.toISOString(),
+        endedAt: endSame ? s.endedAt : end.toISOString(),
+        warmup: F("warmup").checked, games,
+        focuses: Array.from(chips.children).filter(b => b.getAttribute("aria-pressed") === "true").map(b => b.dataset.f),
+        did: F("did").value, well: F("well").value, cost: F("cost").value, next: F("next").value
+      };
+      const save = f.querySelector('button[type="submit"]');
+      save.disabled = true;
+      try {
+        await api("PUT", "coach/players/" + id + "/sessions/" + wk + "/" + s.id, { session });
+        S.editOpen = null; S.editEl = null;
+        setStatus($("#pdStatus"), "Session saved.", "ok");
+        await loadCoach();
+      } catch (err) { save.disabled = false; setStatus(status, err.message, "err"); }
+    });
+    return f;
   }
 
   function buildPlayerDetail(body, id) {

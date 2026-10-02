@@ -259,8 +259,48 @@ function finishSession(s, now) {
   s.minutes = Math.max(0, Math.min(Number(s.minutes) || 0, maxMin, 1440));
   return s;
 }
-// Coach notes are written only through the coach route; anything a player sends is dropped.
-function stripCoachNote(s) { delete s.coachNote; delete s.coachNoteAt; return s; }
+// Coach notes and coach edits are written only through the coach routes; anything a player sends is dropped.
+function stripCoachFields(s) { delete s.coachNote; delete s.coachNoteAt; delete s.coachEditedAt; return s; }
+
+/* Coach edit of a finished session. Same week only; times can't be in the future; at most 24 hours.
+   A Training session has no games. Notes, id and the coach note are kept. */
+function cleanText(v, max) {
+  // eslint-disable-next-line no-control-regex
+  return String(v == null ? "" : v).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").slice(0, max);
+}
+function addDaysYmd(ymd, n) { const d = new Date(ymd + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function applyCoachEdit(s, inc, wk, now) {
+  if (!isPlain(inc)) fail(400, "Bad request.");
+  if (!TYPES.includes(inc.type)) fail(400, "Pick a session type.");
+  const date = String(inc.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < wk || date > addDaysYmd(wk, 6)) fail(400, "Pick a day in this week.");
+  const start = Date.parse(inc.startedAt), end = Date.parse(inc.endedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) fail(400, "Enter a start and end time.");
+  if (end <= start) fail(400, "End time has to be after the start time.");
+  if (end - start > 24 * 3600000) fail(400, "A session can't be longer than 24 hours.");
+  if (end > now + 120000 && !(inc.endedAt === s.endedAt)) fail(400, "End time can't be in the future.");
+  const games = {};
+  for (const p of PL) {
+    const g = isPlain(inc.games) && isPlain(inc.games[p]) ? inc.games[p] : {};
+    const n = v => Math.min(300, Math.max(0, Math.floor(Number(v) || 0)));
+    games[p] = inc.type === "ranked" ? { w: n(g.w), l: n(g.l) } : { w: 0, l: 0 };
+  }
+  // Unchanged times keep the logged duration (a player may have checked out with a corrected time).
+  const sameTimes = inc.startedAt === s.startedAt && inc.endedAt === s.endedAt;
+  s.type = inc.type;
+  s.date = date;
+  if (!sameTimes) {
+    s.startedAt = new Date(start).toISOString();
+    s.endedAt = new Date(end).toISOString();
+    s.minutes = Math.max(1, Math.round((end - start) / 60000));
+  }
+  s.games = games;
+  s.warmup = !!inc.warmup;
+  s.focuses = inc.type === "training" ? normFocus(inc.focuses).slice(0, 20) : [];
+  for (const k of ["did", "well", "cost", "next"]) s[k] = cleanText(inc[k], 4000);
+  s.coachEditedAt = new Date(now).toISOString();
+  return s;
+}
 
 /* Rank history: one row per update where any MMR changed. Feeds the trend line and "this week". */
 async function recordHistory(db, userId, ranks) {
@@ -292,7 +332,7 @@ function mergeWeek(stored, incoming, removeIds, now) {
     const inc = inById.get(s.id);
     if (!inc) { out.push(s); continue; }
     const next = Object.assign({}, inc, { id: s.id, type: s.type, startedAt: s.startedAt, date: s.date || inc.date, planId: s.planId || inc.planId || null });
-    stripCoachNote(next);
+    stripCoachFields(next);
     if (next.endedAt && !finishSession(next, now)) continue;
     out.push(next);
   }
@@ -301,7 +341,7 @@ function mergeWeek(stored, incoming, removeIds, now) {
     if (!TYPES.includes(inc.type) || typeof inc.startedAt !== "string") continue;
     const start = Date.parse(inc.startedAt);
     if (!Number.isFinite(start) || start > now + 120000) continue;
-    const next = stripCoachNote(Object.assign({}, inc));
+    const next = stripCoachFields(Object.assign({}, inc));
     if (next.endedAt && !finishSession(next, now)) continue;
     out.push(next);
   }
@@ -502,9 +542,22 @@ async function route(db, req, method, segs, body, user) {
       if (!s.endedAt) fail(400, "Notes can be added once the session is checked out.");
       // eslint-disable-next-line no-control-regex
       const note = String(body.note == null ? "" : body.note).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 1000);
-      if (note) { s.coachNote = note; s.coachNoteAt = new Date().toISOString(); } else stripCoachNote(s);
+      if (note) { s.coachNote = note; s.coachNoteAt = new Date().toISOString(); } else { delete s.coachNote; delete s.coachNoteAt; }
       await db.prepare("UPDATE weeks SET data = ?, updated_at = ? WHERE user_id = ? AND week = ?").bind(JSON.stringify(d), Date.now(), c, wk).run();
       return json({ ok: true, note });
+    }
+    if (b === "players" && c && segs[3] === "sessions" && segs[5] && !segs[6] && method === "PUT") {
+      const wk = weekId(segs[4]), sid = segs[5];
+      const row = await db.prepare("SELECT data FROM weeks WHERE user_id = ? AND week = ?").bind(c, wk).first();
+      const d = row ? parse(row.data, {}) : {};
+      const list = Array.isArray(d.sessions) ? d.sessions : [];
+      const s = list.find(x => isPlain(x) && x.id === sid);
+      if (!s) fail(404, "That session no longer exists.");
+      if (!s.endedAt) fail(400, "Sessions can be edited once they're checked out.");
+      applyCoachEdit(s, body.session, wk, Date.now());
+      list.sort((x, y) => String(x.startedAt).localeCompare(String(y.startedAt)));
+      await db.prepare("UPDATE weeks SET data = ?, updated_at = ? WHERE user_id = ? AND week = ?").bind(JSON.stringify(d), Date.now(), c, wk).run();
+      return json({ ok: true, session: s });
     }
     if (b === "players" && c && segs[3] === "history" && method === "GET") {
       return json({ history: await readHistory(db, c) });
