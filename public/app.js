@@ -18,7 +18,7 @@
   const DEFAULT_FOCUS = ["Car control", "Shooting", "Aerials", "Dribbling & flicks", "Rotation", "Defense", "Boost management", "Kickoffs", "Recoveries", "Reads & decisions"];
   const DEFAULT_SETTINGS = {
     title: "Nebraska Esports",
-    targets: { ranked: 3, training: 2 },
+    targets: { ranked: 3, training: 2, minGames: 5, minMinutes: 30 },
     rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
   };
   const LONG_SESSION_MIN = 360;
@@ -89,6 +89,8 @@
     const t = isPlain(raw.targets) ? raw.targets : {};
     s.targets.ranked = Math.round(numIn(t.ranked, s.targets.ranked, 14));
     s.targets.training = Math.round(numIn(t.training, s.targets.training, 14));
+    s.targets.minGames = Math.round(numIn(t.minGames, s.targets.minGames, 60));
+    s.targets.minMinutes = Math.round(numIn(t.minMinutes, s.targets.minMinutes, 300));
     if (isPlain(raw.rankedGoals)) for (const p of PL) {
       const g = isPlain(raw.rankedGoals[p.key]) ? raw.rankedGoals[p.key] : {};
       s.rankedGoals[p.key] = { min: numOrNull(g.min), max: numOrNull(g.max) };
@@ -125,7 +127,8 @@
       type: s.type, startedAt: s.startedAt, endedAt: typeof s.endedAt === "string" ? s.endedAt : null,
       minutes: Math.min(1440, n0(s.minutes)), edited: !!s.edited, warmup: !!s.warmup, games: g,
       focuses: Array.isArray(s.focuses) ? s.focuses.filter(f => typeof f === "string").slice(0, 20) : [],
-      did: str(s.did), well: str(s.well), cost: str(s.cost), next: str(s.next)
+      did: str(s.did), well: str(s.well), cost: str(s.cost), next: str(s.next),
+      coachNote: str(s.coachNote, 1000), coachNoteAt: typeof s.coachNoteAt === "string" ? s.coachNoteAt : null
     };
   }
   function normWeek(raw, id) {
@@ -141,7 +144,7 @@
     settings: normSettings(null), me: null, weeks: {},
     view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
-    removals: {},
+    removals: {}, myHist: [], hist: {}, noteOpen: null, noteDraft: {},
     undo: [], saveErr: null, settingsDirty: false, board: null
   };
 
@@ -229,14 +232,23 @@
   }
 
   /* ---------- Week math: finished sessions count toward the weekly requirement ---------- */
+  function gamesIn(s) { return PL.reduce((a, p) => a + s.games[p.key].w + s.games[p.key].l, 0); }
+  // A finished session counts toward the week once it clears its type's minimum.
+  function counts(s) {
+    if (!s.endedAt) return false;
+    const T = S.settings.targets;
+    return s.type === "ranked" ? gamesIn(s) >= T.minGames : s.minutes >= T.minMinutes;
+  }
+  function shortReason(s) { const T = S.settings.targets; return s.type === "ranked" ? "under " + T.minGames + " games" : "under " + T.minMinutes + " min"; }
   function weekStats(w) {
     const st = { ranked: 0, training: 0, games: blankGames(), hasAny: false };
     for (const s of w ? w.sessions : []) {
       st.hasAny = true;
       if (!s.endedAt) continue;
+      for (const p of PL) { st.games[p.key].w += s.games[p.key].w; st.games[p.key].l += s.games[p.key].l; }
+      if (!counts(s)) continue;
       if (s.type === "ranked") st.ranked++;
       else if (s.type === "training") st.training++;
-      for (const p of PL) { st.games[p.key].w += s.games[p.key].w; st.games[p.key].l += s.games[p.key].l; }
     }
     return st;
   }
@@ -325,7 +337,7 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.needsSetup = false;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.needsSetup = false;
     setStatus($("#authStatus"), "Signed out. Sign on again.", "err");
     renderAll();
   }
@@ -349,7 +361,7 @@
   $("#signOff").addEventListener("click", async () => {
     flushAll();
     try { await api("POST", "logout", {}); } catch (_) {}
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {};
     $("#winAccount").hidden = true;
     setStatus($("#authStatus"), "");
     await boot();
@@ -420,6 +432,7 @@
     const c = mk("div", "card live");
     c.innerHTML =
       '<div class="card-head"><p class="ctype"></p><p class="ctime mono"></p></div>' +
+      '<p class="counts-hint"></p>' +
       '<div class="warnbox long-warn" hidden><p>Still checked in after 6 hours?</p>' +
       '<div class="row"><input type="number" class="lw-min" min="1" max="1440" step="5" placeholder="Minutes" aria-label="Actual minutes"><button type="button" class="btn" data-act="checkout-set">Check out with this time</button></div></div>' +
       '<label class="chk sec-warm"><input type="checkbox" data-sfield="warmup"> Warmup</label>' +
@@ -446,6 +459,11 @@
     c.querySelector(".sec-warm").hidden = !(isRanked || isTrain);
     c.querySelectorAll(".sec-ranked").forEach(x => { x.hidden = !isRanked; });
     c.querySelector(".sec-focus").hidden = !isTrain;
+    const T = S.settings.targets, hint = c.querySelector(".counts-hint");
+    const have = isRanked ? (s ? gamesIn(s) : 0) : elapsedMin(a.startedAt), need = isRanked ? T.minGames : T.minMinutes;
+    hint.hidden = need <= 0;
+    hint.classList.toggle("ok", have >= need);
+    hint.textContent = have >= need ? "\u2713 Counts toward the week" : isRanked ? "Counts at " + need + " games \u00b7 " + have + " so far" : "Counts after " + need + " min";
     const rf = reflFor(a.type);
     c.querySelector(".lbl-did").textContent = rf.notes;
     for (const [k, l] of rf.q) c.querySelector('.rq[data-k="' + k + '"]').textContent = l;
@@ -463,6 +481,7 @@
     c.innerHTML =
       '<div class="card-head"><p class="ctype"></p><p class="cmeta"></p></div>' +
       '<p class="csum"></p>' +
+      '<p class="nc"></p>' +
       '<div class="ro"></div>' +
       '<div class="card-actions"><button type="button" class="btn sm danger" data-act="rmsess">Remove</button></div>';
     return c;
@@ -473,6 +492,7 @@
     const rf = reflFor(s.type);
     add(rf.notes, s.did);
     for (const [k, l] of rf.q) add(l, s[k]);
+    if (s.coachNote) { add("Coach", s.coachNote); box.lastChild.classList.add("cn"); }
     box.hidden = !box.children.length;
   }
   function sessionSummary(s) {
@@ -493,6 +513,7 @@
     const sum = sessionSummary(s), sumEl = c.querySelector(".csum");
     sumEl.textContent = sum;
     sumEl.hidden = !sum;
+    c.querySelector(".nc").textContent = counts(s) ? "" : "Doesn't count: " + shortReason(s);
     fillReadOnly(c.querySelector(".ro"), s);
   }
   function renderToday() {
@@ -624,10 +645,12 @@
       const day = mk("div", "wl-day" + (d === S.today ? " is-today" : ""));
       day.append(mk("p", "wl-date", fmtDate(d, { weekday: "short", month: "short", day: "numeric" })));
       for (const s of ses) {
-        const line = mk("div", "wl-line" + (s.endedAt ? "" : " live"));
-        line.append(mk("span", "", (s.endedAt ? "\u2713 " : "\u25cf ") + TYPES[s.type].label + " \u00b7 " + (s.endedAt ? fmtDur(s.minutes) : "now")));
+        const ok = counts(s);
+        const line = mk("div", "wl-line" + (s.endedAt ? (ok ? "" : " nc") : " live"));
+        line.append(mk("span", "", (s.endedAt ? (ok ? "\u2713 " : "\u2013 ") : "\u25cf ") + TYPES[s.type].label + " \u00b7 " + (s.endedAt ? fmtDur(s.minutes) : "now")));
         const sum = s.endedAt ? sessionSummary(s) : "";
         if (sum) line.append(mk("span", "wl-sum", sum));
+        if (s.endedAt && !ok) line.append(mk("span", "wl-nc", "doesn't count (" + shortReason(s) + ")"));
         if (s.endedAt) {
           const rb = mk("button", "linkbtn rm", "Remove");
           rb.type = "button";
@@ -636,6 +659,7 @@
           line.append(rb);
         }
         day.append(line);
+        if (s.coachNote) { const n = mk("p", "wl-note"); n.append(mk("b", "", "Coach: "), document.createTextNode(s.coachNote)); day.append(n); }
       }
       log.append(day);
     }
@@ -652,8 +676,64 @@
   /* ---------- Ranks ---------- */
   function tierColor(tier) { if (!tier) return "--t-unranked"; if (tier === "Supersonic Legend") return TIER_COLOR[tier]; return TIER_COLOR[tier.replace(/ (I|II|III)$/, "")] || "--t-unranked"; }
   function tierMark(tier) { if (!tier || tier === "Unranked") return "–"; if (tier === "Supersonic Legend") return "SSL"; const m = tier.match(/ (I|II|III)$/); return m ? m[1] : ""; }
-  function rankRows(list, ranks, weekGames) {
+  /* MMR history: points only where MMR changed, ascending by time. */
+  function normHist(h) {
+    return (Array.isArray(h) ? h : []).filter(x => isPlain(x) && Number.isFinite(Number(x.at)))
+      .map(x => ({ at: Number(x.at), duel: numOrNull(x.duel), doubles: numOrNull(x.doubles), standard: numOrNull(x.standard) }))
+      .sort((a, b) => a.at - b.at);
+  }
+  function weekStartMs() { return parseYmd(mondayOf(S.today)).getTime(); }
+  // Change since the week started: current MMR minus the last value before Monday (or the first one this week).
+  function weekChange(hist, key, now) {
+    if (now === null) return null;
+    const ws = weekStartMs();
+    let base = null;
+    for (const h of hist) {
+      if (h[key] === null) continue;
+      if (h.at < ws) base = h[key];
+      else { if (base === null) base = h[key]; break; }
+    }
+    return base === null ? null : now - base;
+  }
+  // Step line of MMR over the last 8 weeks: earlier weeks muted, this week in scarlet.
+  let sparkId = 0;
+  function sparkline(hist, key, now, label) {
+    const W = 120, H = 24, PAD = 3, end = Date.now(), from = end - 56 * 864e5;
+    let pts = [], prior = null;
+    for (const h of hist) {
+      if (h[key] === null) continue;
+      if (h.at < from) prior = h[key]; else pts.push({ t: h.at, v: h[key] });
+    }
+    if (prior !== null) pts.unshift({ t: from, v: prior });
+    if (now !== null) pts.push({ t: end, v: now });
+    if (pts.length < 2 || pts[pts.length - 1].t - pts[0].t < 60000) return null;
+    const vs = pts.map(q => q.v), lo = Math.min(...vs), hi = Math.max(...vs);
+    const t0 = pts[0].t, x = t => PAD + ((t - t0) / (end - t0 || 1)) * (W - PAD * 2);
+    const y = v => hi === lo ? H / 2 : PAD + (1 - (v - lo) / (hi - lo)) * (H - PAD * 2);
+    let d = "M" + x(pts[0].t).toFixed(1) + " " + y(pts[0].v).toFixed(1);
+    for (let i = 1; i < pts.length; i++) d += " H" + x(pts[i].t).toFixed(1) + " V" + y(pts[i].v).toFixed(1);
+    const NS = "http://www.w3.org/2000/svg", id = "spk" + (++sparkId);
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "spark");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("role", "img");
+    const desc = label + ", last 8 weeks: " + pts[0].v.toLocaleString("en-US") + " to " + pts[pts.length - 1].v.toLocaleString("en-US") + " (low " + lo.toLocaleString("en-US") + ", high " + hi.toLocaleString("en-US") + ")";
+    svg.setAttribute("aria-label", desc);
+    const title = document.createElementNS(NS, "title"); title.textContent = desc; svg.append(title);
+    const clip = document.createElementNS(NS, "clipPath"); clip.setAttribute("id", id);
+    const rect = document.createElementNS(NS, "rect");
+    const xw = Math.max(PAD, x(Math.max(t0, weekStartMs())));
+    rect.setAttribute("x", xw.toFixed(1)); rect.setAttribute("y", "0"); rect.setAttribute("width", (W - xw).toFixed(1)); rect.setAttribute("height", String(H));
+    clip.append(rect); svg.append(clip);
+    const old = document.createElementNS(NS, "path"); old.setAttribute("d", d); old.setAttribute("class", "old");
+    const cur = document.createElementNS(NS, "path"); cur.setAttribute("d", d); cur.setAttribute("class", "now"); cur.setAttribute("clip-path", "url(#" + id + ")");
+    const dot = document.createElementNS(NS, "circle"); dot.setAttribute("cx", x(end).toFixed(1)); dot.setAttribute("cy", y(pts[pts.length - 1].v).toFixed(1)); dot.setAttribute("r", "3");
+    svg.append(old, cur, dot);
+    return svg;
+  }
+  function rankRows(list, ranks, hist) {
     list.textContent = "";
+    hist = hist || [];
     for (const p of PL) {
       const x = ranks.playlists[p.key];
       const li = mk("li", "rank");
@@ -662,17 +742,18 @@
       badge.setAttribute("aria-hidden", "true");
       const main = mk("div");
       main.append(mk("p", "rank-pl", p.name));
-      const tr = mk("p", "rank-tier" + (x.tier ? "" : " unset"), x.tier || "—");
+      const tr = mk("p", "rank-tier" + (x.tier ? "" : " unset"), x.tier || "\u2014");
       if (x.tier && x.div) tr.append(mk("span", "div", x.div));
       main.append(tr);
+      const sp = sparkline(hist, p.key, x.mmr, p.name + " MMR");
+      if (sp) main.append(sp);
       const nums = mk("div", "rank-nums");
-      const mmr = mk("p", "mmr", x.mmr !== null ? x.mmr.toLocaleString("en-US") : "—");
+      const mmr = mk("p", "mmr", x.mmr !== null ? x.mmr.toLocaleString("en-US") : "\u2014");
       mmr.append(mk("span", "unit", "MMR"));
-      const ch = ranks.mmrChange[p.key];
-      if (ch) mmr.append(mk("span", "delta " + (ch > 0 ? "up" : "down"), (ch > 0 ? "+" : "−") + Math.abs(ch)));
-      const gm = mk("p", "gm", x.games !== null ? x.games.toLocaleString("en-US") + " games" : "");
-      if (weekGames) { const g = weekGames[p.key]; if (g.w + g.l) { gm.append(" "); gm.append(mk("b", "", "+" + (g.w + g.l))); } }
-      nums.append(mmr, gm);
+      nums.append(mmr);
+      const ch = weekChange(hist, p.key, x.mmr);
+      if (ch !== null) nums.append(mk("p", "wk " + (ch > 0 ? "up" : ch < 0 ? "down" : "flat"), (ch > 0 ? "+" : ch < 0 ? "\u2212" : "\u00b1") + Math.abs(ch) + " this week"));
+      if (x.games !== null) nums.append(mk("p", "gm", x.games.toLocaleString("en-US") + " games"));
       li.append(badge, main, nums);
       list.append(li);
     }
@@ -680,8 +761,7 @@
   function rankStamp(r) { const t = r.pulledAt && r.pulledAt >= (r.ranksAt || "") ? r.pulledAt : r.ranksAt; return t ? "Updated " + fmtStamp(t) : ""; }
   function renderRanks() {
     if (!S.me) return;
-    const wk = mondayOf(S.today);
-    rankRows($("#rankList"), S.me.ranks, weekStats(getWeek(wk)).games);
+    rankRows($("#rankList"), S.me.ranks, S.myHist);
     $("#rankUpdated").textContent = rankStamp(S.me.ranks);
   }
 
@@ -704,6 +784,12 @@
     } catch (_) {}
     finally { coachLoading = false; }
     renderCoach();
+    if (S.sel) loadHist(S.sel);
+  }
+  async function loadHist(id) {
+    try { const r = await api("GET", "coach/players/" + id + "/history"); S.hist[id] = normHist(r.history); }
+    catch (_) { return; }
+    if (S.sel === id) renderPlayerDetail();
   }
   function rosterIds() {
     // Every player, plus the coach only in weeks the coach logged something.
@@ -759,7 +845,7 @@
       const pill = mk("span", "pill " + x.g, statusLabel(x));
       if (x.g === "live") pill.title = TYPES[p.active.type].label + " \u00b7 " + fmtDur(elapsedMin(p.active.startedAt));
       b.append(nm, cell(x.st.ranked, T.ranked), cell(x.st.training, T.training), pill);
-      b.addEventListener("click", () => { S.sel = x.id; renderCoach(); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
+      b.addEventListener("click", () => { S.sel = x.id; renderCoach(); loadHist(x.id); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
       box.append(b);
     }
     renderPlayerDetail();
@@ -774,7 +860,7 @@
       body.append(mk("p", "empty", "Select a player."));
       return;
     }
-    if (S.pdFor !== id) { buildPlayerDetail(body, id); S.pdFor = id; }
+    if (S.pdFor !== id) { buildPlayerDetail(body, id); S.pdFor = id; S.noteOpen = null; S.noteDraft = {}; }
     $("#tPlayer").textContent = p.name;
     $("#pdName").textContent = p.name;
     const ts = $("#pdTeam");
@@ -783,12 +869,14 @@
     link.hidden = !p.trackerUrl;
     if (p.trackerUrl) link.href = p.trackerUrl;
     const stats = $("#pdStats");
+    // Keep an open note editor's focus and cursor through the 30-second refresh.
+    const fe = document.activeElement, focusNote = fe && fe.dataset && fe.dataset.noteFor ? { sid: fe.dataset.noteFor, a: fe.selectionStart, b: fe.selectionEnd } : null;
     stats.textContent = "";
     if (p.active && S.coachWk === mondayOf(S.today)) stats.append(mk("p", "status err", "● " + TYPES[p.active.type].label + " · since " + fmtClock(p.active.startedAt)));
     const w = S.rosterWeeks[id] || normWeek(null, S.coachWk);
     const st = weekStats(w);
     const ranks = mk("ul", "rank-list");
-    rankRows(ranks, p.ranks, st.games);
+    rankRows(ranks, p.ranks, S.hist[id] || []);
     stats.append(ranks);
     const stamp = rankStamp(p.ranks);
     if (stamp) stats.append(mk("p", "fine", stamp));
@@ -803,18 +891,50 @@
       const dayBox = mk("div", "pd-day");
       dayBox.append(mk("h4", "", fmtDate(d, { weekday: "long", month: "short", day: "numeric" })));
       for (const s of ses) {
-        const sb = mk("div", "pd-sess" + (s.endedAt ? "" : " live"));
-        sb.append(mk("p", "pd-line", (s.endedAt ? "✓ " : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") : "since " + fmtClock(s.startedAt))));
+        const ok = counts(s);
+        const sb = mk("div", "pd-sess" + (s.endedAt ? (ok ? "" : " nc") : " live"));
+        sb.append(mk("p", "pd-line", (s.endedAt ? (ok ? "✓ " : "– ") : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") : "since " + fmtClock(s.startedAt))));
         const sum = sessionSummary(s);
         if (sum) sb.append(mk("p", "pd-line muted", sum));
+        if (s.endedAt && !ok) sb.append(mk("p", "nc", "Doesn't count: " + shortReason(s)));
         const addRefl = (label, text) => { if (!text.trim()) return; const r = mk("p", "pd-refl"); r.append(mk("b", "", label + ": "), document.createTextNode(text.trim())); sb.append(r); };
         const rf = reflFor(s.type);
         addRefl(rf.notes, s.did);
         for (const [k, l] of rf.q) addRefl(l, s[k]);
+        const sid = s.id, wk = S.coachWk;
         const rrow = mk("div", "row");
+        if (s.endedAt && S.noteOpen === sid) {
+          const ed = mk("div", "note-ed");
+          const ta = mk("textarea");
+          ta.rows = 2; ta.maxLength = 1000; ta.dataset.noteFor = sid;
+          ta.setAttribute("aria-label", "Note to " + p.name);
+          ta.value = sid in S.noteDraft ? S.noteDraft[sid] : s.coachNote;
+          ta.addEventListener("input", () => { S.noteDraft[sid] = ta.value; });
+          const er = mk("div", "row end");
+          const cancel = mk("button", "btn sm", "Cancel"); cancel.type = "button";
+          cancel.addEventListener("click", () => { S.noteOpen = null; delete S.noteDraft[sid]; renderPlayerDetail(); });
+          const save = mk("button", "btn sm primary", "Save note"); save.type = "button";
+          save.addEventListener("click", async () => {
+            save.disabled = true;
+            try { await api("PUT", "coach/players/" + id + "/sessions/" + wk + "/" + sid + "/note", { note: ta.value }); S.noteOpen = null; delete S.noteDraft[sid]; await loadCoach(); }
+            catch (err) { save.disabled = false; setStatus($("#pdStatus"), err.message, "err"); }
+          });
+          er.append(cancel, save);
+          ed.append(ta, er);
+          sb.append(ed);
+        } else if (s.coachNote) {
+          const n = mk("p", "pd-refl cn"); n.append(mk("b", "", "Your note: "), document.createTextNode(s.coachNote)); sb.append(n);
+        }
+        if (s.endedAt && S.noteOpen !== sid) {
+          const nb = mk("button", "linkbtn", s.coachNote ? "Edit note" : "Add note"); nb.type = "button";
+          nb.addEventListener("click", () => {
+            S.noteOpen = sid; S.noteDraft[sid] = s.coachNote; renderPlayerDetail();
+            const t = document.querySelector('[data-note-for="' + sid + '"]'); if (t) t.focus();
+          });
+          rrow.append(nb);
+        }
         const rb = mk("button", "btn sm danger", "Remove");
         rb.type = "button";
-        const sid = s.id, wk = S.coachWk;
         rb.addEventListener("click", () => armOrRun(rb, async () => {
           rb.disabled = true;
           try { await api("DELETE", "coach/players/" + id + "/sessions/" + wk + "/" + sid); await loadCoach(); }
@@ -827,6 +947,10 @@
       stats.append(dayBox);
     }
     if (!st.hasAny) stats.append(mk("p", "empty", "Nothing this week."));
+    if (focusNote) {
+      const t = stats.querySelector('[data-note-for="' + focusNote.sid + '"]');
+      if (t) { t.focus(); try { t.setSelectionRange(focusNote.a, focusNote.b); } catch (_) {} }
+    }
   }
 
   function buildPlayerDetail(body, id) {
@@ -892,7 +1016,7 @@
       const f = form("Ranks", inner, "Save", async f2 => {
         const ranks = {};
         for (const q of PL) ranks[q.key] = { tier: f2.elements[q.key + "-tier"].value || null, div: f2.elements[q.key + "-div"].value || null, mmr: numOrNull(f2.elements[q.key + "-mmr"].value), games: numOrNull(f2.elements[q.key + "-games"].value) };
-        await patch({ ranks }, "Ranks saved.");
+        if (await patch({ ranks }, "Ranks saved.")) loadHist(id);
       });
       for (const q of PL) {
         const x = cur.playlists[q.key];
@@ -996,6 +1120,8 @@
     setVal($("#setTitle"), s.title);
     setVal($("#setRanked"), String(s.targets.ranked));
     setVal($("#setTraining"), String(s.targets.training));
+    setVal($("#setMinGames"), String(s.targets.minGames));
+    setVal($("#setMinMinutes"), String(s.targets.minMinutes));
     for (const p of PL) {
       const g = s.rankedGoals[p.key];
       setVal($("#g-" + p.key + "-min"), g.min === null ? "" : String(g.min));
@@ -1007,7 +1133,7 @@
     e.preventDefault();
     const goals = {};
     for (const p of PL) goals[p.key] = { min: $("#g-" + p.key + "-min").value, max: $("#g-" + p.key + "-max").value };
-    const draft = { title: $("#setTitle").value.trim(), targets: { ranked: $("#setRanked").value, training: $("#setTraining").value }, rankedGoals: goals };
+    const draft = { title: $("#setTitle").value.trim(), targets: { ranked: $("#setRanked").value, training: $("#setTraining").value, minGames: $("#setMinGames").value, minMinutes: $("#setMinMinutes").value }, rankedGoals: goals };
     try {
       const r = await api("PUT", "coach/settings", { settings: draft });
       S.settings = normSettings(r.settings);
@@ -1039,7 +1165,8 @@
 
   /* ---------- Load + refresh ---------- */
   async function loadMine() {
-    const [me, wk] = await Promise.all([api("GET", "me"), api("GET", "weeks")]);
+    const [me, wk, hi] = await Promise.all([api("GET", "me"), api("GET", "weeks"), api("GET", "ranks/history").catch(() => null)]);
+    if (hi) S.myHist = normHist(hi.history);
     const fresh = normUser(me.me);
     if (dirty.has("me") && S.me) { fresh.active = S.me.active; fresh.customFocus = S.me.customFocus; }
     S.me = fresh;

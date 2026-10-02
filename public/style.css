@@ -54,6 +54,8 @@ button{cursor:pointer}
 
 /* Masthead */
 .masthead{display:flex;align-items:flex-end;justify-content:space-between;gap:6px 16px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.logo{flex:none;width:clamp(40px,8vw,56px);height:auto}
 .masthead h1{font:700 clamp(28px,6vw,44px)/1.04 var(--font-title);color:var(--scarlet);letter-spacing:-.01em;text-shadow:1px 1px 0 var(--white),2px 2px 0 rgba(107,0,0,.2);text-wrap:balance;overflow-wrap:anywhere}
 .conn{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
 .conn:empty{display:none}
@@ -122,6 +124,10 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .live .ctype::before{content:"● ";color:var(--scarlet)}
 .ctime{font-size:15px;color:var(--scarlet-dk)}
 .cmeta{font-size:12.5px;color:var(--muted)}
+.counts-hint{font-size:12px;color:var(--warn)}
+.counts-hint.ok{color:var(--ok);font-weight:700}
+.nc{font-size:12px;color:var(--warn)}
+.nc:empty{display:none}
 .csum{font-size:12.5px;overflow-wrap:anywhere}
 .card-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .warnbox{display:grid;gap:8px;padding:9px 10px;background:var(--warn-soft);border:1px solid #D9B676;color:var(--warn);font-size:12.5px}
@@ -184,6 +190,10 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .wl-line{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 10px;font-size:12.5px;color:var(--ok)}
 .wl-line.live{color:var(--scarlet-dk)}
 .wl-sum{color:var(--muted)}
+.wl-line.nc{color:var(--muted)}
+.wl-nc{color:var(--warn)}
+.wl-note{font-size:12px;padding:4px 8px;background:var(--scarlet-soft);border-left:3px solid var(--scarlet);white-space:pre-wrap;overflow-wrap:anywhere}
+.wl-note b{color:var(--scarlet-dk)}
 .wl-line .rm{margin-left:auto;font-size:11.5px}
 
 /* Ranks */
@@ -198,11 +208,16 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .rank-nums{display:grid;justify-items:end;text-align:right}
 .mmr{font-family:var(--font-mono);font-weight:700}
 .mmr .unit{font-size:10.5px;color:var(--muted);margin-left:3px;font-weight:400}
-.delta{font-family:var(--font-mono);font-size:11px;margin-left:5px}
-.delta.up{color:var(--ok)}
-.delta.down{color:var(--scarlet-dk)}
+.wk{font-family:var(--font-mono);font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.wk.up{color:var(--ok)}
+.wk.down{color:var(--scarlet-dk)}
+.wk.flat{color:var(--muted);font-weight:400}
+.spark{display:block;width:120px;height:24px;margin-top:4px;overflow:visible}
+.spark path{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.spark .old{stroke:var(--bevel)}
+.spark .now{stroke:var(--scarlet)}
+.spark circle{fill:var(--scarlet);stroke:var(--paper);stroke-width:1.5}
 .gm{font-size:11.5px;color:var(--muted)}
-.gm b{color:var(--scarlet-dk)}
 
 /* Forms in windows */
 .sub{display:grid;gap:10px;padding:12px;background:var(--paper);border:1px solid var(--bevel)}
@@ -251,7 +266,10 @@ button.rrow:hover{background:var(--scarlet-soft)}
 .board li.none{color:var(--muted);justify-content:center}
 .pd-team{display:flex;align-items:center;gap:8px}
 .pd-team select{width:auto;min-width:120px}
-.pd-sess .row{justify-content:flex-end}
+.pd-sess .row .danger{margin-left:auto}
+.pd-sess.nc{border-left-color:var(--amber)}
+.pd-refl.cn{padding:4px 8px;background:var(--scarlet-soft);border-left:3px solid var(--scarlet)}
+.note-ed{display:grid;gap:6px}
 .ro{display:grid;gap:3px}
 .roster{background:var(--paper);border:1px solid var(--bevel);min-width:0}
 .bteam{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-left:6px}

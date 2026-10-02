@@ -18,7 +18,7 @@ const TYPES = ["ranked", "training"];
 const TEAMS = ["varsity", "white", "black"];
 const DEFAULT_SETTINGS = {
   title: "Nebraska Esports",
-  targets: { ranked: 3, training: 2 },
+  targets: { ranked: 3, training: 2, minGames: 5, minMinutes: 30 },
   rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
 };
 
@@ -54,8 +54,17 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS settings (
      id INTEGER PRIMARY KEY,
      data TEXT NOT NULL
-   )`
+   )`,
+  `CREATE TABLE IF NOT EXISTS rank_history (
+     user_id TEXT NOT NULL,
+     at INTEGER NOT NULL,
+     duel INTEGER,
+     doubles INTEGER,
+     standard INTEGER
+   )`,
+  `CREATE INDEX IF NOT EXISTS rank_history_user ON rank_history(user_id, at)`
 ];
+const HISTORY_DAYS = 120;
 let schemaReady = false;
 
 class HttpError extends Error {
@@ -156,6 +165,8 @@ function normSettings(raw) {
   const t = isPlain(raw.targets) ? raw.targets : {};
   s.targets.ranked = Math.round(numIn(t.ranked, s.targets.ranked, 14));
   s.targets.training = Math.round(numIn(t.training, s.targets.training, 14));
+  s.targets.minGames = Math.round(numIn(t.minGames, s.targets.minGames, 60));
+  s.targets.minMinutes = Math.round(numIn(t.minMinutes, s.targets.minMinutes, 300));
   if (isPlain(raw.rankedGoals)) {
     for (const p of PL) {
       const g = isPlain(raw.rankedGoals[p]) ? raw.rankedGoals[p] : {};
@@ -248,6 +259,26 @@ function finishSession(s, now) {
   s.minutes = Math.max(0, Math.min(Number(s.minutes) || 0, maxMin, 1440));
   return s;
 }
+// Coach notes are written only through the coach route; anything a player sends is dropped.
+function stripCoachNote(s) { delete s.coachNote; delete s.coachNoteAt; return s; }
+
+/* Rank history: one row per update where any MMR changed. Feeds the trend line and "this week". */
+async function recordHistory(db, userId, ranks) {
+  const pl = isPlain(ranks) && isPlain(ranks.playlists) ? ranks.playlists : {};
+  const v = PL.map(p => (isPlain(pl[p]) && Number.isFinite(pl[p].mmr) ? pl[p].mmr : null));
+  if (v.every(x => x === null)) return;
+  const last = await db.prepare("SELECT duel, doubles, standard FROM rank_history WHERE user_id = ? ORDER BY at DESC LIMIT 1").bind(userId).first();
+  if (last && last.duel === v[0] && last.doubles === v[1] && last.standard === v[2]) return;
+  await db.prepare("INSERT INTO rank_history (user_id, at, duel, doubles, standard) VALUES (?, ?, ?, ?, ?)").bind(userId, Date.now(), v[0], v[1], v[2]).run();
+}
+async function readHistory(db, userId) {
+  const since = Date.now() - HISTORY_DAYS * 864e5;
+  const { results } = await db.prepare("SELECT at, duel, doubles, standard FROM rank_history WHERE user_id = ? AND at >= ? ORDER BY at LIMIT 3000").bind(userId, since).all();
+  // Keep the last point before the window too, so "this week" has a starting value.
+  const before = await db.prepare("SELECT at, duel, doubles, standard FROM rank_history WHERE user_id = ? AND at < ? ORDER BY at DESC LIMIT 1").bind(userId, since).first();
+  return (before ? [before] : []).concat(results);
+}
+
 function mergeWeek(stored, incoming, removeIds, now) {
   const removed = new Set((Array.isArray(stored.removed) ? stored.removed : []).concat(removeIds).filter(x => typeof x === "string"));
   const storedSessions = (Array.isArray(stored.sessions) ? stored.sessions : []).filter(s => isPlain(s) && typeof s.id === "string");
@@ -261,6 +292,7 @@ function mergeWeek(stored, incoming, removeIds, now) {
     const inc = inById.get(s.id);
     if (!inc) { out.push(s); continue; }
     const next = Object.assign({}, inc, { id: s.id, type: s.type, startedAt: s.startedAt, date: s.date || inc.date, planId: s.planId || inc.planId || null });
+    stripCoachNote(next);
     if (next.endedAt && !finishSession(next, now)) continue;
     out.push(next);
   }
@@ -269,7 +301,7 @@ function mergeWeek(stored, incoming, removeIds, now) {
     if (!TYPES.includes(inc.type) || typeof inc.startedAt !== "string") continue;
     const start = Date.parse(inc.startedAt);
     if (!Number.isFinite(start) || start > now + 120000) continue;
-    const next = Object.assign({}, inc);
+    const next = stripCoachNote(Object.assign({}, inc));
     if (next.endedAt && !finishSession(next, now)) continue;
     out.push(next);
   }
@@ -311,7 +343,13 @@ export async function onRequest({ request, env, params }) {
     let body = null;
     if (method !== "GET" && method !== "HEAD") { checkOrigin(request); body = await readJson(request); }
     const user = await currentUser(db, request);
-    return await route(db, request, method, segs, body || {}, user);
+    const res = await route(db, request, method, segs, body || {}, user);
+    // Sign-ins renew themselves: any request in the last 29 days of a session pushes it out to 30 again.
+    if (user && !res.headers.has("Set-Cookie") && user.s_exp - Date.now() < (SESSION_DAYS - 1) * 864e5) {
+      await db.prepare("UPDATE sessions SET expires_at = ? WHERE token_hash = ?").bind(Date.now() + SESSION_DAYS * 864e5, user.s_hash).run();
+      res.headers.append("Set-Cookie", cookie(request, sessionToken(request), SESSION_DAYS * 86400));
+    }
+    return res;
   } catch (e) {
     if (e instanceof HttpError) return json({ error: e.message }, e.status);
     console.error(e && e.stack ? e.stack : e);
@@ -384,6 +422,7 @@ async function route(db, req, method, segs, body, user) {
     const { results } = await db.prepare("SELECT week, data FROM weeks WHERE user_id = ? ORDER BY week DESC LIMIT 80").bind(user.id).all();
     return json({ weeks: results.map(r => ({ week: r.week, data: parse(r.data, {}) })) });
   }
+  if (key === "GET ranks/history") return json({ history: await readHistory(db, user.id) });
   if (method === "GET" && a === "leaderboard" && b && !c) {
     // Ranked games logged this week, per player. Names and counts only.
     const wk = weekId(b);
@@ -418,11 +457,11 @@ async function route(db, req, method, segs, body, user) {
   if (a === "coach") {
     if (user.role !== "coach") fail(403, "Coach only.");
 
-    if (key === "GET coach/players") {
+    if (key === "GET coach/players" && !c) {
       const { results } = await db.prepare("SELECT * FROM users ORDER BY username COLLATE NOCASE").all();
       return json({ players: results.map(pub) });
     }
-    if (key === "POST coach/players") {
+    if (key === "POST coach/players" && !c) {
       const name = cleanName(body.name);
       if (!name) fail(400, "Enter a name.");
       if (await nameTaken(db, name, null)) fail(409, "That name is taken.");
@@ -454,6 +493,22 @@ async function route(db, req, method, segs, body, user) {
       await db.batch(ops);
       return json({ ok: true });
     }
+    if (b === "players" && c && segs[3] === "sessions" && segs[6] === "note" && method === "PUT") {
+      const wk = weekId(segs[4]), sid = segs[5];
+      const row = await db.prepare("SELECT data FROM weeks WHERE user_id = ? AND week = ?").bind(c, wk).first();
+      const d = row ? parse(row.data, {}) : {};
+      const s = (Array.isArray(d.sessions) ? d.sessions : []).find(x => isPlain(x) && x.id === sid);
+      if (!s) fail(404, "That session no longer exists.");
+      if (!s.endedAt) fail(400, "Notes can be added once the session is checked out.");
+      // eslint-disable-next-line no-control-regex
+      const note = String(body.note == null ? "" : body.note).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 1000);
+      if (note) { s.coachNote = note; s.coachNoteAt = new Date().toISOString(); } else stripCoachNote(s);
+      await db.prepare("UPDATE weeks SET data = ?, updated_at = ? WHERE user_id = ? AND week = ?").bind(JSON.stringify(d), Date.now(), c, wk).run();
+      return json({ ok: true, note });
+    }
+    if (b === "players" && c && segs[3] === "history" && method === "GET") {
+      return json({ history: await readHistory(db, c) });
+    }
     if (b === "players" && c && (method === "PATCH" || method === "DELETE")) {
       const target = await db.prepare("SELECT * FROM users WHERE id = ?").bind(c).first();
       if (!target) fail(404, "That player no longer exists.");
@@ -462,6 +517,7 @@ async function route(db, req, method, segs, body, user) {
         await db.batch([
           db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM weeks WHERE user_id = ?").bind(c),
+          db.prepare("DELETE FROM rank_history WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM users WHERE id = ?").bind(c)
         ]);
         return json({ ok: true });
@@ -490,8 +546,10 @@ async function route(db, req, method, segs, body, user) {
         sets.push("pw_hash = ?", "fail_count = 0", "locked_until = 0"); vals.push(await makePw(pw));
         extra.push(db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(c));
       }
-      if ("ranks" in body) { sets.push("ranks = ?"); vals.push(JSON.stringify(applyRanks(parse(target.ranks, {}), body.ranks, false))); }
+      let newRanks = null;
+      if ("ranks" in body) { newRanks = applyRanks(parse(target.ranks, {}), body.ranks, false); sets.push("ranks = ?"); vals.push(JSON.stringify(newRanks)); }
       if (sets.length) await db.batch([db.prepare("UPDATE users SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, c)].concat(extra));
+      if (newRanks) await recordHistory(db, c, newRanks);
       const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(c).first();
       return json({ player: pub(u) });
     }
@@ -516,7 +574,9 @@ async function route(db, req, method, segs, body, user) {
         if (!isPlain(up) || typeof up.id !== "string" || !isPlain(up.playlists)) continue;
         const row = await db.prepare("SELECT ranks FROM users WHERE id = ?").bind(up.id).first();
         if (!row) continue;
-        await db.prepare("UPDATE users SET ranks = ? WHERE id = ?").bind(JSON.stringify(applyRanks(parse(row.ranks, {}), up.playlists, true)), up.id).run();
+        const next = applyRanks(parse(row.ranks, {}), up.playlists, true);
+        await db.prepare("UPDATE users SET ranks = ? WHERE id = ?").bind(JSON.stringify(next), up.id).run();
+        await recordHistory(db, up.id, next);
         saved++;
       }
       return json({ saved });
