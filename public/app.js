@@ -887,7 +887,7 @@
     box.hidden = !ids.length;
     box.textContent = "";
     if (ids.length) {
-      const head = mk("div", "rrow rhead");
+      const head = mk("div", "rrow rh");
       head.append(mk("span", "", "Player"), mk("span", "", "Hours"), mk("span", "", "Status"));
       box.append(head);
     }
