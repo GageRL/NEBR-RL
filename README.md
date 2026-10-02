@@ -1,6 +1,6 @@
 # Nebraska Esports training hub
 
-Players plan their week, check in to sessions and reflect. The coach manages logins, sees the roster, and sets weekly requirements.
+Players plan their personal training week (Ranked Sessions and Training), check in to sessions and reflect. The coach manages logins, sees the roster, and sets weekly requirements.
 
 Static site in `public/`, one Cloudflare Pages Function in `functions/api/`, and a Cloudflare D1 database. No build step.
 

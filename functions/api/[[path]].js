@@ -14,10 +14,10 @@ const PL = ["duel", "doubles", "standard"];
 const TIER_BASES = ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Champion", "Grand Champion"];
 const TIERS = ["Unranked"].concat(TIER_BASES.flatMap(t => [t + " I", t + " II", t + " III"]), ["Supersonic Legend"]);
 const DIVS = ["Div I", "Div II", "Div III", "Div IV"];
-const TYPES = ["ranked", "training", "scrim", "physical"];
+const TYPES = ["ranked", "training"];
 const DEFAULT_SETTINGS = {
   title: "Nebraska Esports",
-  targets: { hours: 15, scrims: 3, physicalDays: 5, physicalMin: 45, minDays: 0 },
+  targets: { hours: 15, minDays: 0 },
   rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
 };
 
@@ -153,9 +153,6 @@ function normSettings(raw) {
   if (typeof raw.title === "string" && raw.title.trim()) s.title = raw.title.trim().replace(/\s+/g, " ").slice(0, 60);
   const t = isPlain(raw.targets) ? raw.targets : {};
   s.targets.hours = Math.round(numIn(t.hours, s.targets.hours, 80) * 2) / 2;
-  s.targets.scrims = Math.round(numIn(t.scrims, s.targets.scrims, 21));
-  s.targets.physicalDays = Math.round(numIn(t.physicalDays, s.targets.physicalDays, 7));
-  s.targets.physicalMin = Math.round(numIn(t.physicalMin, s.targets.physicalMin, 300));
   s.targets.minDays = Math.round(numIn(t.minDays, s.targets.minDays, 7));
   if (isPlain(raw.rankedGoals)) {
     for (const p of PL) {

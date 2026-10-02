@@ -13,16 +13,14 @@
   const TIER_COLOR = { Unranked: "--t-unranked", Bronze: "--t-bronze", Silver: "--t-silver", Gold: "--t-gold", Platinum: "--t-platinum", Diamond: "--t-diamond", Champion: "--t-champion", "Grand Champion": "--t-gc", "Supersonic Legend": "--t-ssl" };
   const TYPES = {
     ranked: { label: "Ranked Session", individual: true },
-    training: { label: "Training", individual: true },
-    scrim: { label: "Scrim", individual: false },
-    physical: { label: "Physical Activity", individual: false }
+    training: { label: "Training", individual: true }
   };
   const TYPE_KEYS = Object.keys(TYPES);
-  const DEFAULT_MIN = { ranked: 90, training: 120, scrim: 90, physical: 45 };
+  const DEFAULT_MIN = { ranked: 90, training: 120 };
   const DEFAULT_FOCUS = ["Car control", "Shooting", "Aerials", "Dribbling & flicks", "Rotation", "Defense", "Boost management", "Kickoffs", "Recoveries", "Reads & decisions"];
   const DEFAULT_SETTINGS = {
     title: "Nebraska Esports",
-    targets: { hours: 15, scrims: 3, physicalDays: 5, physicalMin: 45, minDays: 0 },
+    targets: { hours: 15, minDays: 0 },
     rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
   };
   const LONG_SESSION_MIN = 360;
@@ -87,9 +85,6 @@
     if (typeof raw.title === "string" && raw.title.trim()) s.title = raw.title.trim().slice(0, 60);
     const t = isPlain(raw.targets) ? raw.targets : {};
     s.targets.hours = numIn(t.hours, s.targets.hours, 80);
-    s.targets.scrims = Math.round(numIn(t.scrims, s.targets.scrims, 21));
-    s.targets.physicalDays = Math.round(numIn(t.physicalDays, s.targets.physicalDays, 7));
-    s.targets.physicalMin = Math.round(numIn(t.physicalMin, s.targets.physicalMin, 300));
     s.targets.minDays = Math.round(numIn(t.minDays, s.targets.minDays, 7));
     if (isPlain(raw.rankedGoals)) for (const p of PL) {
       const g = isPlain(raw.rankedGoals[p.key]) ? raw.rankedGoals[p.key] : {};
@@ -209,30 +204,25 @@
   /* ---------- Week math ---------- */
   function sumMin(list, pred) { return list.reduce((a, x) => a + (pred(x) ? x.minutes : 0), 0); }
   function weekStats(w, wk) {
-    const T = S.settings.targets, today = S.today;
-    const st = { pInd: 0, dInd: 0, rInd: 0, pScr: 0, dScr: 0, rScr: 0, pPhys: 0, dPhys: 0, rPhys: 0, pDays: 0, dDays: 0, rDays: 0, games: blankGames(), hasAny: false };
-    const physOK = m => T.physicalMin > 0 ? m >= T.physicalMin : m > 0;
+    const today = S.today;
+    const st = { pInd: 0, dInd: 0, rInd: 0, pDays: 0, dDays: 0, rDays: 0, games: blankGames(), hasAny: false };
     for (const d of weekDates(wk)) {
       const items = (w && w.plan[d]) || [];
       const ses = w ? w.sessions.filter(s => s.date === d && s.endedAt) : [];
       if (items.length || (w && w.sessions.some(s => s.date === d))) st.hasAny = true;
-      const pI = sumMin(items, i => TYPES[i.type].individual), dI = sumMin(ses, s => TYPES[s.type].individual);
-      const pS = items.filter(i => i.type === "scrim").length, dS = ses.filter(s => s.type === "scrim").length;
-      const pP = physOK(sumMin(items, i => i.type === "physical")), dP = physOK(sumMin(ses, s => s.type === "physical"));
-      const pD = items.some(i => TYPES[i.type].individual), dD = ses.some(s => TYPES[s.type].individual);
-      st.pInd += pI; st.dInd += dI; st.pScr += pS; st.dScr += dS;
-      if (pP) st.pPhys++; if (dP) st.dPhys++; if (pD) st.pDays++; if (dD) st.dDays++;
-      if (d > today) { st.rInd += pI; st.rScr += pS; if (pP) st.rPhys++; if (pD) st.rDays++; }
-      else if (d === today) { st.rInd += Math.max(0, pI - dI); st.rScr += Math.max(0, pS - dS); if (pP && !dP) st.rPhys++; if (pD && !dD) st.rDays++; }
+      const pI = sumMin(items, () => true), dI = sumMin(ses, () => true);
+      const pD = items.length > 0, dD = ses.length > 0;
+      st.pInd += pI; st.dInd += dI;
+      if (pD) st.pDays++; if (dD) st.dDays++;
+      if (d > today) { st.rInd += pI; if (pD) st.rDays++; }
+      else if (d === today) { st.rInd += Math.max(0, pI - dI); if (pD && !dD) st.rDays++; }
       for (const s of ses) for (const p of PL) { st.games[p.key].w += s.games[p.key].w; st.games[p.key].l += s.games[p.key].l; }
     }
     return st;
   }
   function reqRows(st) {
     const T = S.settings.targets, rows = [];
-    if (T.hours > 0) rows.push({ key: "ind", label: "Individual", target: Math.round(T.hours * 60), planned: st.pInd, done: st.dInd, remain: st.rInd, fmt: hrs, unit: " h" });
-    if (T.scrims > 0) rows.push({ key: "scr", label: "Scrims", target: T.scrims, planned: st.pScr, done: st.dScr, remain: st.rScr, fmt: String, unit: "" });
-    if (T.physicalDays > 0) rows.push({ key: "phy", label: "Physical", note: T.physicalMin > 0 ? T.physicalMin + "+ min" : "", target: T.physicalDays, planned: st.pPhys, done: st.dPhys, remain: st.rPhys, fmt: String, unit: " days" });
+    if (T.hours > 0) rows.push({ key: "ind", label: "Hours", target: Math.round(T.hours * 60), planned: st.pInd, done: st.dInd, remain: st.rInd, fmt: hrs, unit: " h" });
     if (T.minDays > 0) rows.push({ key: "days", label: "Training days", target: T.minDays, planned: st.pDays, done: st.dDays, remain: st.rDays, fmt: String, unit: "" });
     return rows;
   }
@@ -241,10 +231,7 @@
     for (const r of rows) {
       const gap = r.target - r.planned;
       if (gap <= 0) continue;
-      if (r.key === "ind") out.push(hrs(gap) + " h");
-      else if (r.key === "scr") out.push(gap + (gap === 1 ? " scrim" : " scrims"));
-      else if (r.key === "phy") out.push(gap + " physical " + (gap === 1 ? "day" : "days"));
-      else out.push(gap + " training " + (gap === 1 ? "day" : "days"));
+      out.push(r.key === "ind" ? hrs(gap) + " h" : gap + (gap === 1 ? " day" : " days"));
     }
     return out;
   }
@@ -507,7 +494,6 @@
     const sum = sessionSummary(s), sumEl = c.querySelector(".csum");
     sumEl.textContent = sum;
     sumEl.hidden = !sum;
-    c.querySelector(".refl").hidden = s.type === "physical";
     setVal(c.querySelector('[data-sfield="did"]'), s.did);
     for (const [k] of REFL) setVal(c.querySelector('[data-sfield="' + k + '"]'), s[k]);
   }
@@ -799,7 +785,7 @@
   const GROUPS = [["live", "In session"], ["behind", "Behind"], ["onpace", "On pace"], ["done", "Done"], ["noplan", "No plan"], ["missed", "Missed"], ["notyet", "Joined later"]];
   function statusLine(id) {
     const rows = reqRows(weekStats(S.rosterWeeks[id] || normWeek(null, S.coachWk), S.coachWk));
-    return rows.map(r => r.key === "ind" ? hrs(r.done) + "/" + hrs(r.target) + " h" : r.done + "/" + r.target + " " + (r.key === "scr" ? "scrims" : r.key === "phy" ? "phys" : "days")).join(" · ");
+    return rows.map(r => r.key === "ind" ? hrs(r.done) + "/" + hrs(r.target) + " h" : r.done + "/" + r.target + " days").join(" · ");
   }
   function awayMessage(id) {
     const w = S.rosterWeeks[id];
@@ -1062,9 +1048,6 @@
     const s = S.settings;
     setVal($("#setTitle"), s.title);
     setVal($("#setHours"), String(s.targets.hours));
-    setVal($("#setScrims"), String(s.targets.scrims));
-    setVal($("#setPhysDays"), String(s.targets.physicalDays));
-    setVal($("#setPhysMin"), String(s.targets.physicalMin));
     setVal($("#setMinDays"), String(s.targets.minDays));
     for (const p of PL) {
       const g = s.rankedGoals[p.key];
@@ -1077,7 +1060,7 @@
     e.preventDefault();
     const goals = {};
     for (const p of PL) goals[p.key] = { min: $("#g-" + p.key + "-min").value, max: $("#g-" + p.key + "-max").value };
-    const draft = { title: $("#setTitle").value.trim(), targets: { hours: $("#setHours").value, scrims: $("#setScrims").value, physicalDays: $("#setPhysDays").value, physicalMin: $("#setPhysMin").value, minDays: $("#setMinDays").value }, rankedGoals: goals };
+    const draft = { title: $("#setTitle").value.trim(), targets: { hours: $("#setHours").value, minDays: $("#setMinDays").value }, rankedGoals: goals };
     try {
       const r = await api("PUT", "coach/settings", { settings: draft });
       S.settings = normSettings(r.settings);
