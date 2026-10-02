@@ -90,11 +90,13 @@
               <button type="button" class="btn sm" id="cwThis">Today</button>
               <button type="button" class="btn sm primary push" id="addOpen">+ Player</button>
             </div>
+            <div class="tabs" id="teamTabs" role="group" aria-label="Roster"></div>
             <form class="sub" id="addForm" novalidate hidden>
               <div class="add-grid">
                 <label class="fld"><span class="lbl">Name</span><input type="text" id="addName" maxlength="32" autocomplete="off" spellcheck="false"></label>
                 <label class="fld"><span class="lbl">Password</span><span class="pw-row"><input type="text" id="addPw" maxlength="128" autocomplete="off" spellcheck="false"><button type="button" class="btn sm" id="addGen">New</button></span></label>
-                <label class="fld wide"><span class="lbl">Tracker link</span><input type="url" id="addTracker" placeholder="rocketleague.tracker.network/…" autocomplete="off"></label>
+                <label class="fld"><span class="lbl">Roster</span><select id="addTeam"><option value="varsity">Varsity</option><option value="white">White</option><option value="black">Black</option></select></label>
+                <label class="fld"><span class="lbl">Tracker link</span><input type="url" id="addTracker" placeholder="rocketleague.tracker.network/…" autocomplete="off"></label>
               </div>
               <p class="status" id="addStatus" role="status"></p>
               <div class="row end"><button type="button" class="btn" id="addCancel">Close</button><button type="submit" class="btn primary">Add</button></div>

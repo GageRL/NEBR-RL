@@ -15,6 +15,7 @@ const TIER_BASES = ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Champion
 const TIERS = ["Unranked"].concat(TIER_BASES.flatMap(t => [t + " I", t + " II", t + " III"]), ["Supersonic Legend"]);
 const DIVS = ["Div I", "Div II", "Div III", "Div IV"];
 const TYPES = ["ranked", "training"];
+const TEAMS = ["varsity", "white", "black"];
 const DEFAULT_SETTINGS = {
   title: "Nebraska Esports",
   targets: { hours: 15, minDays: 0 },
@@ -26,6 +27,7 @@ const SCHEMA = [
      id TEXT PRIMARY KEY,
      username TEXT NOT NULL UNIQUE COLLATE NOCASE,
      role TEXT NOT NULL,
+     team TEXT,
      pw_hash TEXT NOT NULL,
      tracker_url TEXT,
      ranks TEXT,
@@ -214,6 +216,7 @@ function normFocus(list) {
 function pub(u) {
   return {
     id: u.id, name: u.username, role: u.role,
+    team: TEAMS.includes(u.team) ? u.team : null,
     trackerUrl: u.tracker_url || "",
     ranks: normRanks(parse(u.ranks, {})),
     active: parse(u.active, null),
@@ -230,6 +233,49 @@ async function nameTaken(db, name, exceptId) {
   return !!row && row.id !== exceptId;
 }
 function weekId(v) { if (!/^\d{4}-\d{2}-\d{2}$/.test(v || "")) fail(400, "Unknown week."); return v; }
+
+/* Finished sessions are locked: once a session has ended, later saves can't change it.
+   Sessions are only ever removed on purpose (listed in `remove`), never because a
+   stale device left them out. Removed ids are remembered so they can't come back. */
+function finishSession(s, now) {
+  const start = Date.parse(s.startedAt);
+  if (!Number.isFinite(start)) return null;
+  let end = Date.parse(s.endedAt);
+  if (!Number.isFinite(end) || end > now + 120000) end = now;
+  if (end < start) end = start;
+  const maxMin = Math.ceil((end - start) / 60000) + 1;
+  s.endedAt = new Date(end).toISOString();
+  s.minutes = Math.max(0, Math.min(Number(s.minutes) || 0, maxMin, 1440));
+  return s;
+}
+function mergeWeek(stored, incoming, removeIds, now) {
+  const removed = new Set((Array.isArray(stored.removed) ? stored.removed : []).concat(removeIds).filter(x => typeof x === "string"));
+  const storedSessions = (Array.isArray(stored.sessions) ? stored.sessions : []).filter(s => isPlain(s) && typeof s.id === "string");
+  const inSessions = (Array.isArray(incoming.sessions) ? incoming.sessions : []).filter(s => isPlain(s) && typeof s.id === "string" && s.id.length <= 40);
+  const inById = new Map(inSessions.map(s => [s.id, s]));
+  const storedIds = new Set(storedSessions.map(s => s.id));
+  const out = [];
+  for (const s of storedSessions) {
+    if (removed.has(s.id)) continue;
+    if (s.endedAt) { out.push(s); continue; }
+    const inc = inById.get(s.id);
+    if (!inc) { out.push(s); continue; }
+    const next = Object.assign({}, inc, { id: s.id, type: s.type, startedAt: s.startedAt, date: s.date || inc.date, planId: s.planId || inc.planId || null });
+    if (next.endedAt && !finishSession(next, now)) continue;
+    out.push(next);
+  }
+  for (const inc of inSessions) {
+    if (storedIds.has(inc.id) || removed.has(inc.id)) continue;
+    if (!TYPES.includes(inc.type) || typeof inc.startedAt !== "string") continue;
+    const start = Date.parse(inc.startedAt);
+    if (!Number.isFinite(start) || start > now + 120000) continue;
+    const next = Object.assign({}, inc);
+    if (next.endedAt && !finishSession(next, now)) continue;
+    out.push(next);
+  }
+  out.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+  return { plan: isPlain(incoming.plan) ? incoming.plan : {}, sessions: out, removed: Array.from(removed).slice(-300) };
+}
 
 /* ---------- request plumbing ---------- */
 async function readJson(req) {
@@ -253,7 +299,12 @@ export async function onRequest({ request, env, params }) {
   try {
     if (!env.DB) return json({ error: "The site's database isn't connected yet." }, 503);
     const db = env.DB;
-    if (!schemaReady) { await db.batch(SCHEMA.map(s => db.prepare(s))); schemaReady = true; }
+    if (!schemaReady) {
+      await db.batch(SCHEMA.map(s => db.prepare(s)));
+      const cols = await db.prepare("PRAGMA table_info(users)").all();
+      if (!(cols.results || []).some(c => c.name === "team")) await db.prepare("ALTER TABLE users ADD COLUMN team TEXT").run();
+      schemaReady = true;
+    }
     const segs = (Array.isArray(params.path) ? params.path : [params.path]).filter(Boolean);
     const method = request.method;
     let body = null;
@@ -335,11 +386,16 @@ async function route(db, req, method, segs, body, user) {
   if (method === "PUT" && a === "weeks" && b && !c) {
     const wk = weekId(b);
     if (!isPlain(body.data)) fail(400, "Bad request.");
-    const data = JSON.stringify(body.data);
+    const removeIds = Array.isArray(body.remove) ? body.remove.filter(x => typeof x === "string").slice(0, 100) : [];
+    const row = await db.prepare("SELECT data FROM weeks WHERE user_id = ? AND week = ?").bind(user.id, wk).first();
+    const stored = row ? parse(row.data, {}) : {};
+    const merged = mergeWeek(isPlain(stored) ? stored : {}, body.data, removeIds, Date.now());
+    merged.week = wk;
+    const data = JSON.stringify(merged);
     if (data.length > 200000) fail(413, "That week has too much in it to save.");
     await db.prepare("INSERT INTO weeks (user_id, week, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, week) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at")
       .bind(user.id, wk, data, Date.now()).run();
-    return json({ ok: true });
+    return json({ data: merged });
   }
 
   /* ----- coach only ----- */
@@ -359,10 +415,28 @@ async function route(db, req, method, segs, body, user) {
       const url = trackerUrl(raw);
       if (raw && !url) fail(400, "That isn't a Rocket League Tracker profile link.");
       const id = newId();
-      await db.prepare("INSERT INTO users (id, username, role, pw_hash, tracker_url, created_at) VALUES (?, ?, 'player', ?, ?, ?)")
-        .bind(id, name, await makePw(pw), url || null, Date.now()).run();
+      const team = TEAMS.includes(body.team) ? body.team : "varsity";
+      await db.prepare("INSERT INTO users (id, username, role, team, pw_hash, tracker_url, created_at) VALUES (?, ?, 'player', ?, ?, ?, ?)")
+        .bind(id, name, team, await makePw(pw), url || null, Date.now()).run();
       const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
       return json({ player: pub(u) });
+    }
+    if (b === "players" && c && segs[3] === "sessions" && method === "DELETE") {
+      const wk = weekId(segs[4]), sid = segs[5];
+      if (!sid) fail(400, "Bad request.");
+      const target = await db.prepare("SELECT id, active FROM users WHERE id = ?").bind(c).first();
+      if (!target) fail(404, "That player no longer exists.");
+      const row = await db.prepare("SELECT data FROM weeks WHERE user_id = ? AND week = ?").bind(c, wk).first();
+      const d = row ? parse(row.data, {}) : {};
+      const sessions = Array.isArray(d.sessions) ? d.sessions : [];
+      d.sessions = sessions.filter(s => !(isPlain(s) && s.id === sid));
+      d.removed = (Array.isArray(d.removed) ? d.removed : []).concat([sid]).slice(-300);
+      d.week = wk;
+      const ops = [db.prepare("INSERT INTO weeks (user_id, week, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, week) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at").bind(c, wk, JSON.stringify(d), Date.now())];
+      const act = parse(target.active, null);
+      if (isPlain(act) && act.id === sid) ops.push(db.prepare("UPDATE users SET active = 'null' WHERE id = ?").bind(c));
+      await db.batch(ops);
+      return json({ ok: true });
     }
     if (b === "players" && c && (method === "PATCH" || method === "DELETE")) {
       const target = await db.prepare("SELECT * FROM users WHERE id = ?").bind(c).first();
@@ -382,6 +456,11 @@ async function route(db, req, method, segs, body, user) {
         if (!name) fail(400, "Enter a name.");
         if (await nameTaken(db, name, c)) fail(409, "That name is taken.");
         sets.push("username = ?"); vals.push(name);
+      }
+      if ("team" in body) {
+        if (target.role === "coach") fail(400, "The coach isn't on a roster.");
+        if (!TEAMS.includes(body.team)) fail(400, "Pick Varsity, White, or Black.");
+        sets.push("team = ?"); vals.push(body.team);
       }
       if ("trackerUrl" in body) {
         const raw = String(body.trackerUrl || "").trim();

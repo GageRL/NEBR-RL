@@ -25,6 +25,8 @@
   };
   const LONG_SESSION_MIN = 360;
   const REFL = [["well", "Went well"], ["cost", "Cost me games"], ["next", "Work on next"]];
+  const TEAMS = [["varsity", "Varsity"], ["white", "White"], ["black", "Black"]];
+  const teamName = t => { const x = TEAMS.find(p => p[0] === t); return x ? x[1] : ""; };
 
   /* ---------- Helpers ---------- */
   const $ = s => document.querySelector(s);
@@ -111,7 +113,7 @@
     return out;
   }
   function normUser(u) {
-    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], createdAt: Number(u.createdAt) || 0 };
+    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: TEAMS.some(t => t[0] === u.team) ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], createdAt: Number(u.createdAt) || 0 };
   }
   function normSession(s) {
     const g = blankGames();
@@ -144,6 +146,8 @@
     settings: normSettings(null), me: null, weeks: {},
     view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
+    teamFilter: ["all", "varsity", "white", "black"].includes(pref.get("team")) ? pref.get("team") : "all",
+    removals: {},
     undo: [], saveErr: null, settingsDirty: false
   };
 
@@ -155,10 +159,16 @@
     timers[key] = setTimeout(() => { delete timers[key]; flush(key); }, delay == null ? 600 : delay);
     renderConn();
   }
-  function runOp(key) {
+  async function runOp(key) {
     if (key === "me") return api("PATCH", "me", { active: S.me.active, customFocus: S.me.customFocus });
-    if (key.startsWith("w:")) { const wk = key.slice(2); return api("PUT", "weeks/" + wk, { data: S.weeks[wk] || normWeek(null, wk) }); }
-    return Promise.resolve();
+    if (key.startsWith("w:")) {
+      const wk = key.slice(2);
+      const rm = Array.from(S.removals[wk] || []);
+      const r = await api("PUT", "weeks/" + wk, { data: S.weeks[wk] || normWeek(null, wk), remove: rm });
+      if (S.removals[wk]) rm.forEach(id => S.removals[wk].delete(id));
+      // Take the server's copy (finished sessions are locked there) unless newer local edits are waiting.
+      if (r && r.data && !timers[key] && !again.has(key)) { S.weeks[wk] = normWeek(r.data, wk); renderToday(); renderWeek(); }
+    }
   }
   async function flush(key) {
     if (!S.me) return;
@@ -332,7 +342,7 @@
   function openAccount() {
     const w = $("#winAccount");
     w.hidden = false;
-    $("#accName").textContent = S.me.name;
+    $("#accName").textContent = S.me.name + (S.me.team ? " · " + teamName(S.me.team) : "");
     setStatus($("#pwStatus"), "");
     w.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
   }
@@ -428,6 +438,8 @@
       '<div class="fld sec-focus"><span class="lbl">Focus</span><div class="chips"></div>' +
       '<form class="addf" data-form="addfocus"><input type="text" maxlength="30" placeholder="Add" aria-label="Add a focus area"><button type="submit" class="btn sm">+</button></form></div>' +
       '<label class="fld"><span class="lbl lbl-did">Notes</span><textarea rows="2" data-sfield="did"></textarea></label>' +
+      '<div class="refl">' + REFL.map(([k, l]) => '<label class="fld"><span class="lbl">' + l + '</span><textarea rows="2" data-sfield="' + k + '"></textarea></label>').join("") + '</div>' +
+      '<p class="fine">Sessions lock at check out.</p>' +
       '<div class="card-actions"><button type="button" class="btn primary" data-act="checkout">Check out</button></div>';
     buildCounters(c.querySelector(".ctrs"));
     return c;
@@ -449,6 +461,7 @@
       if (isRanked) updateCounters(c.querySelector(".ctrs"), s);
       if (isTrain) renderChips(c.querySelector(".chips"), s.focuses);
       setVal(c.querySelector('[data-sfield="did"]'), s.did);
+      for (const [k] of REFL) setVal(c.querySelector('[data-sfield="' + k + '"]'), s[k]);
     }
     c.querySelector('[data-act="undo"]').disabled = !S.undo.some(u => u.sid === a.id);
   }
@@ -470,11 +483,16 @@
     c.innerHTML =
       '<div class="card-head"><p class="ctype"></p><p class="cmeta"></p></div>' +
       '<p class="csum"></p>' +
-      '<div class="timeedit"><button type="button" class="linkbtn" data-act="edittime">Edit time</button>' +
-      '<span class="te-form" hidden><input type="number" min="1" max="1440" step="5" class="te-min" aria-label="Minutes"><button type="button" class="btn sm" data-act="savetime">Save</button></span></div>' +
-      '<label class="fld"><span class="lbl lbl-did">Notes</span><textarea rows="2" data-sfield="did"></textarea></label>' +
-      '<div class="refl">' + REFL.map(([k, l]) => '<label class="fld"><span class="lbl">' + l + '</span><textarea rows="2" data-sfield="' + k + '"></textarea></label>').join("") + '</div>';
+      '<div class="ro"></div>' +
+      '<div class="card-actions"><button type="button" class="btn sm danger" data-act="rmsess">Remove</button></div>';
     return c;
+  }
+  function fillReadOnly(box, s) {
+    box.textContent = "";
+    const add = (label, text) => { if (!text || !text.trim()) return; const p = mk("p", "pd-refl"); p.append(mk("b", "", label + ": "), document.createTextNode(text.trim())); box.append(p); };
+    add("Notes", s.did);
+    for (const [k, l] of REFL) add(l, s[k]);
+    box.hidden = !box.children.length;
   }
   function sessionSummary(s) {
     const bits = [];
@@ -494,8 +512,7 @@
     const sum = sessionSummary(s), sumEl = c.querySelector(".csum");
     sumEl.textContent = sum;
     sumEl.hidden = !sum;
-    setVal(c.querySelector('[data-sfield="did"]'), s.did);
-    for (const [k] of REFL) setVal(c.querySelector('[data-sfield="' + k + '"]'), s[k]);
+    fillReadOnly(c.querySelector(".ro"), s);
   }
   function renderToday() {
     if (!S.me) return;
@@ -568,29 +585,37 @@
       const f = b.dataset.f;
       mutateSession(ctx.wk, ctx.sid, s => { const i = s.focuses.indexOf(f); if (i >= 0) s.focuses.splice(i, 1); else s.focuses.push(f); }, 400);
       renderToday();
-    } else if (act === "edittime") {
-      const f = ctx.c.querySelector(".te-form");
-      f.hidden = !f.hidden;
-      if (!f.hidden) { const s = findSession(ctx.wk, ctx.sid); const inp = f.querySelector(".te-min"); inp.value = s ? String(s.minutes) : ""; inp.focus(); }
-    } else if (act === "savetime") {
-      const v = n0(ctx.c.querySelector(".te-min").value);
-      if (v > 0) { mutateSession(ctx.wk, ctx.sid, s => { s.minutes = Math.min(1440, v); s.edited = true; }, 0); ctx.c.querySelector(".te-form").hidden = true; renderToday(); renderWeek(); }
+    } else if (act === "rmsess") {
+      armOrRun(b, () => removeSession(ctx.wk, ctx.sid));
     }
   });
+  // Two-step buttons: first tap arms ("Confirm"), second tap runs. Disarms after 4 s.
+  function armOrRun(b, fn, armedLabel) {
+    if (b.dataset.armed === "1") { b.dataset.armed = ""; fn(); return; }
+    const old = b.textContent;
+    b.dataset.armed = "1";
+    b.textContent = armedLabel || "Confirm remove";
+    setTimeout(() => { if (b.isConnected && b.dataset.armed === "1") { b.dataset.armed = ""; b.textContent = old; } }, 4000);
+  }
+  function removeSession(wk, sid) {
+    (S.removals[wk] = S.removals[wk] || new Set()).add(sid);
+    mutateWeek(wk, w => { w.sessions = w.sessions.filter(s => s.id !== sid); }, 0);
+    renderToday(); renderWeek(); renderRanks();
+  }
   todayBody.addEventListener("input", e => {
     const f = e.target.dataset.sfield;
     if (!f || f === "warmup") return;
     const ctx = cardCtx(e.target);
     if (!ctx) return;
     const v = e.target.value.slice(0, 4000);
-    mutateSession(ctx.wk, ctx.sid, s => { s[f] = v; }, 800);
+    mutateSession(ctx.wk, ctx.sid, s => { if (!s.endedAt) s[f] = v; }, 800);
   });
   todayBody.addEventListener("change", e => {
     if (e.target.dataset.sfield !== "warmup") return;
     const ctx = cardCtx(e.target);
     if (!ctx) return;
     const v = e.target.checked;
-    mutateSession(ctx.wk, ctx.sid, s => { s.warmup = v; }, 0);
+    mutateSession(ctx.wk, ctx.sid, s => { if (!s.endedAt) s.warmup = v; }, 0);
   });
   todayBody.addEventListener("submit", e => {
     e.preventDefault();
@@ -663,7 +688,17 @@
       keyed(d.querySelector(".items"), items.map(i => i.id), makeItem, (r, id) => updateItem(r, items.find(i => i.id === id)));
       const dl = d.querySelector(".dones");
       dl.textContent = "";
-      for (const s of ses) dl.append(mk("p", "done-line" + (s.endedAt ? "" : " live"), (s.endedAt ? "✓ " : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtDur(s.minutes) : "now")));
+      for (const s of ses) {
+        const line = mk("p", "done-line" + (s.endedAt ? "" : " live"), (s.endedAt ? "✓ " : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtDur(s.minutes) : "now"));
+        if (s.endedAt) {
+          const rb = mk("button", "linkbtn rm", "Remove");
+          rb.type = "button";
+          rb.dataset.act = "rmsess";
+          rb.dataset.sid = s.id;
+          line.append(" ", rb);
+        }
+        dl.append(line);
+      }
     });
   }
   const dayCtx = n => { const d = n.closest(".day"); return d ? d.dataset.date : null; };
@@ -700,6 +735,7 @@
     const date = dayCtx(b);
     if (!date) return;
     const wk = mondayOf(date), act = b.dataset.act;
+    if (act === "rmsess") { armOrRun(b, () => removeSession(wk, b.dataset.sid), "Confirm"); return; }
     if (act === "additem") mutateWeek(wk, w => { (w.plan[date] = w.plan[date] || []).push({ id: newId(), type: "training", minutes: DEFAULT_MIN.training, time: "" }); }, 400);
     else if (act === "rmitem") { const id = itemCtx(b); mutateWeek(wk, w => { w.plan[date] = (w.plan[date] || []).filter(i => i.id !== id); if (!w.plan[date].length) delete w.plan[date]; }, 400); }
     else if (act === "addtime") { const r = b.closest(".item"); r.dataset.timeOpen = "1"; renderWeek(); const t = r.querySelector('[data-ifield="time"]'); if (t) t.focus(); return; }
@@ -768,8 +804,26 @@
     renderCoach();
   }
   function rosterIds() {
-    return Object.keys(S.roster).filter(id => S.roster[id].role === "player" || (S.rosterWeeks[id] && weekStats(S.rosterWeeks[id], S.coachWk).hasAny))
-      .sort((a, b) => S.roster[a].name.localeCompare(S.roster[b].name, "en", { sensitivity: "base" }));
+    const f = S.teamFilter;
+    return Object.keys(S.roster).filter(id => {
+      const p = S.roster[id];
+      if (p.role === "coach") return f === "all" && !!S.rosterWeeks[id] && weekStats(S.rosterWeeks[id], S.coachWk).hasAny;
+      return f === "all" || p.team === f;
+    }).sort((a, b) => S.roster[a].name.localeCompare(S.roster[b].name, "en", { sensitivity: "base" }));
+  }
+  function renderTeamTabs() {
+    const box = $("#teamTabs");
+    box.textContent = "";
+    const players = Object.values(S.roster).filter(p => p.role === "player");
+    for (const [k, l] of [["all", "All"]].concat(TEAMS)) {
+      const n = k === "all" ? players.length : players.filter(p => p.team === k).length;
+      const b = mk("button", "tab", l);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(S.teamFilter === k));
+      b.append(mk("span", "n", String(n)));
+      b.addEventListener("click", () => { S.teamFilter = k; pref.set("team", k); renderCoach(); });
+      box.append(b);
+    }
   }
   function playerStatus(id) {
     const p = S.roster[id], w = S.rosterWeeks[id] || normWeek(null, S.coachWk), wk = S.coachWk, thisWk = mondayOf(S.today);
@@ -803,8 +857,10 @@
     const thisWk = mondayOf(S.today);
     $("#cwLabel").textContent = weekLabel(S.coachWk);
     $("#cwThis").hidden = S.coachWk === thisWk;
+    renderTeamTabs();
     const ids = rosterIds();
     $("#rosterEmpty").hidden = !S.rosterLoaded || ids.length > 0;
+    $("#rosterEmpty").textContent = S.teamFilter === "all" ? "No players yet." : "No one on " + teamName(S.teamFilter) + ".";
     const box = $("#rosterList");
     box.hidden = !ids.length;
     box.textContent = "";
@@ -825,7 +881,9 @@
         const b = mk("button", "buddy");
         b.type = "button";
         if (S.sel === id) b.setAttribute("aria-current", "true");
-        b.append(mk("i", "bstat " + g), mk("span", "bname", p.name));
+        const nm = mk("span", "bname", p.name);
+        if (S.teamFilter === "all" && p.team) nm.append(mk("span", "bteam", teamName(p.team)));
+        b.append(mk("i", "bstat " + g), nm);
         let line = statusLine(id);
         if (g === "live") line = TYPES[p.active.type].label + " · " + fmtDur(elapsedMin(p.active.startedAt)) + (line ? " · " + line : "");
         if (line) b.append(mk("span", "bline", line));
@@ -852,6 +910,8 @@
     if (S.pdFor !== id) { buildPlayerDetail(body, id); S.pdFor = id; }
     $("#tPlayer").textContent = p.name;
     $("#pdName").textContent = p.name;
+    const ts = $("#pdTeam");
+    if (ts && document.activeElement !== ts) ts.value = p.team || "varsity";
     const link = $("#pdTracker");
     link.hidden = !p.trackerUrl;
     if (p.trackerUrl) link.href = p.trackerUrl;
@@ -887,6 +947,17 @@
         const addRefl = (label, text) => { if (!text.trim()) return; const r = mk("p", "pd-refl"); r.append(mk("b", "", label + ": "), document.createTextNode(text.trim())); sb.append(r); };
         addRefl("Notes", s.did);
         for (const [k, l] of REFL) addRefl(l, s[k]);
+        const rrow = mk("div", "row");
+        const rb = mk("button", "btn sm danger", "Remove");
+        rb.type = "button";
+        const sid = s.id, wk = S.coachWk;
+        rb.addEventListener("click", () => armOrRun(rb, async () => {
+          rb.disabled = true;
+          try { await api("DELETE", "coach/players/" + id + "/sessions/" + wk + "/" + sid); await loadCoach(); }
+          catch (err) { rb.disabled = false; setStatus($("#pdStatus"), err.message, "err"); }
+        }));
+        rrow.append(rb);
+        sb.append(rrow);
         dayBox.append(sb);
       }
       stats.append(dayBox);
@@ -909,6 +980,7 @@
     const btn = (label, cls, fn) => { const b = mk("button", "btn sm" + (cls ? " " + cls : ""), label); b.type = "button"; b.addEventListener("click", fn); acts.append(b); return b; };
     const forms = mk("div", "stack");
     const status = mk("p", "status");
+    status.id = "pdStatus";
     status.setAttribute("role", "status");
     const closeAll = () => { forms.textContent = ""; };
     const done = (msg) => { closeAll(); setStatus(status, msg, "ok"); };
@@ -985,6 +1057,17 @@
       });
       rm.setAttribute("aria-label", "Remove player");
     }
+    if (p.role === "player") {
+      const tr = mk("label", "pd-team");
+      tr.append(mk("span", "lbl", "Roster"));
+      const sel = mk("select");
+      sel.id = "pdTeam";
+      TEAMS.forEach(([k, l]) => sel.append(new Option(l, k)));
+      sel.value = p.team || "varsity";
+      sel.addEventListener("change", () => patch({ team: sel.value }, "Moved to " + teamName(sel.value) + "."));
+      tr.append(sel);
+      body.append(tr);
+    }
     body.append(acts, status, forms);
     const stats = mk("div", "stack");
     stats.id = "pdStats";
@@ -1010,17 +1093,17 @@
   $("#addOpen").addEventListener("click", () => {
     const f = $("#addForm");
     f.hidden = !f.hidden;
-    if (!f.hidden) { $("#addPw").value = genPassword(); setStatus($("#addStatus"), ""); $("#addName").focus(); }
+    if (!f.hidden) { $("#addPw").value = genPassword(); $("#addTeam").value = S.teamFilter !== "all" ? S.teamFilter : "varsity"; setStatus($("#addStatus"), ""); $("#addName").focus(); }
   });
   $("#addGen").addEventListener("click", () => { $("#addPw").value = genPassword(); });
   $("#addCancel").addEventListener("click", () => { $("#addForm").hidden = true; });
   $("#addForm").addEventListener("submit", async e => {
     e.preventDefault();
     const st = $("#addStatus");
-    const name = $("#addName").value.trim(), pw = $("#addPw").value, tracker = $("#addTracker").value.trim();
+    const name = $("#addName").value.trim(), pw = $("#addPw").value, tracker = $("#addTracker").value.trim(), team = $("#addTeam").value;
     if (!name) { setStatus(st, "Enter a name.", "err"); return; }
     try {
-      const r = await api("POST", "coach/players", { name, password: pw, trackerUrl: tracker });
+      const r = await api("POST", "coach/players", { name, password: pw, trackerUrl: tracker, team });
       const u = normUser(r.player);
       S.roster[u.id] = u;
       showCopy(st, u.name, pw);
