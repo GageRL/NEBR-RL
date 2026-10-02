@@ -77,7 +77,7 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 /* ---------- Panels ---------- */
 .win{background:var(--cream);border:2px solid var(--scarlet);border-radius:var(--r);min-width:0;overflow:hidden}
 .tbar{display:flex;align-items:center;gap:10px;padding:14px 14px 0 18px}
-.ttl{flex:1;min-width:0;font:700 24px/1.1 var(--display);text-transform:uppercase;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ttl{flex:1;min-width:0;font:700 clamp(26px,3.6vw,30px)/1 var(--display);text-transform:uppercase;letter-spacing:.01em;overflow-wrap:anywhere}
 .tmin{flex:none;display:grid;place-items:center;width:32px;height:32px;padding:0;border:2px solid var(--line-2);border-radius:50%;background:none;color:var(--scarlet);font-size:0}
 .tmin::before{content:"";width:8px;height:8px;border:solid currentColor;border-width:0 2.5px 2.5px 0;transform:translateY(2px) rotate(-135deg);transition:transform .15s}
 .tmin[aria-expanded="false"]::before{transform:translateY(-2px) rotate(45deg)}
@@ -127,14 +127,16 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .row.end{justify-content:flex-end}
 .spread{display:flex;align-items:baseline;justify-content:space-between;gap:6px 12px;flex-wrap:wrap}
 .big-date{font:700 26px/1.1 var(--display);text-transform:uppercase}
+#todayDate{font-size:clamp(40px,6.2vw,62px);line-height:.92;letter-spacing:-.005em;max-width:9ch}
 
 /* ---------- Check in ---------- */
 .checkins{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-.ci{position:relative;overflow:hidden;display:grid;gap:4px;justify-items:start;align-content:end;min-height:104px;padding:16px 18px;text-align:left;border:0;border-radius:16px;color:var(--cream);background:radial-gradient(circle at 112% 135%,var(--alizarin) 0 52%,transparent 52.4%),var(--scarlet);transition:transform .12s}
+.ci{position:relative;overflow:hidden;display:grid;gap:4px;justify-items:start;align-content:start;min-height:132px;padding:16px 18px;text-align:left;border:0;border-radius:18px;color:var(--scarlet);background:var(--cream) url(/brand/corner.svg) right bottom/auto 78% no-repeat;transition:transform .12s}
+@media (max-width:560px){.ci{min-height:118px;padding:14px;background-size:auto 56%}}
 .ci:hover{transform:translateY(-2px)}
 .ci:active{transform:none}
 .ci-k{font:600 11.5px var(--text);letter-spacing:.1em;text-transform:uppercase}
-.ci-t{font:700 clamp(20px,3.4vw,26px)/1.05 var(--display);text-transform:uppercase}
+.ci-t{font:700 clamp(22px,3.4vw,30px)/.95 var(--display);text-transform:uppercase;max-width:7ch}
 .ci:focus-visible{outline-offset:3px}
 
 /* ---------- Session cards ---------- */
@@ -147,7 +149,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .ctype{font:700 19px/1.1 var(--display);text-transform:uppercase}
 .live .ctype{display:flex;align-items:center;gap:9px}
 .live .ctype::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--cream);animation:blink 1.6s ease-in-out infinite}
-.ctime{font:600 22px/1 var(--display);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.ctime{font:600 28px/1 var(--display);font-variant-numeric:tabular-nums;letter-spacing:.02em}
 .cmeta{font-size:12.5px}
 .counts-hint{font-size:13px;font-style:italic}
 .counts-hint.ok{font-style:normal;font-weight:600}
@@ -188,16 +190,19 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .weeknav{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .weeknav #wkPrev,.weeknav #wkNext,.weeknav #cwPrev,.weeknav #cwNext{width:34px;min-height:34px;padding:0;font-size:11px}
 .wk-label{font:600 18px var(--display);text-transform:uppercase;letter-spacing:.03em;min-width:132px;text-align:center}
-.reqs{display:grid;gap:12px}
+.reqs{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
 .reqs:empty{display:none}
-.req{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:14px}
-.req-name{font:600 17px var(--display);text-transform:uppercase;letter-spacing:.03em}
-.pips{display:flex;gap:6px}
-.pips i{width:20px;height:20px;border:2.5px solid var(--scarlet);border-radius:50%}
-.pips i.on{background:var(--scarlet)}
-.req-nums{min-width:52px;text-align:right;font:700 20px var(--display);font-variant-numeric:tabular-nums}
-.verdict{padding:10px 16px;border-radius:12px;font:700 17px var(--display);text-transform:uppercase;letter-spacing:.04em}
-.verdict.good{background:var(--scarlet);color:var(--cream)}
+.req{display:grid;grid-template-areas:"name" "nums" "pips";justify-items:start;gap:6px;padding:14px 16px 16px;border:2px solid var(--scarlet);border-radius:18px;min-width:0}
+.req-name{grid-area:name;font:600 14px var(--display);text-transform:uppercase;letter-spacing:.08em}
+.req.met .req-name::after{content:" \2713"}
+.req-nums{grid-area:nums;font:700 clamp(44px,6vw,60px)/.92 var(--display);font-variant-numeric:tabular-nums;white-space:nowrap}
+.req.met{background:var(--scarlet) url(/brand/shape-br.svg) right bottom/auto 92% no-repeat;color:var(--cream)}
+/* Requirement pips are little Nebraska shields: outlined to go, filled when done. */
+.pips{grid-area:pips;display:flex;flex-wrap:wrap;gap:5px}
+.pips i{width:18px;height:20px;background:currentColor;-webkit-mask:url(/brand/pip.svg) center/contain no-repeat;mask:url(/brand/pip.svg) center/contain no-repeat}
+.pips i.on{-webkit-mask-image:url(/brand/pip-on.svg);mask-image:url(/brand/pip-on.svg)}
+.verdict{padding:12px 18px;border-radius:16px;font:700 22px/1.1 var(--display);text-transform:uppercase;letter-spacing:.03em}
+.verdict.good{background:var(--scarlet) url(/brand/shape-br.svg) right bottom/auto 170% no-repeat;color:var(--cream);padding-block:18px}
 .verdict.short{border:2px dashed var(--scarlet)}
 .verdict:empty{display:none}
 .wlog{display:grid}
@@ -210,19 +215,21 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .wl-line.nc{font-weight:400}
 .wl-nc{font-style:italic}
 .wl-line .rm{margin-left:auto;font-size:12px}
-.wl-note,.pd-refl.cn{padding:6px 10px;border-left:3px solid var(--scarlet);border-radius:0 8px 8px 0;background:var(--tint);font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere}
+.wl-note,.pd-refl.cn{font-style:italic;padding:6px 10px;border-left:3px solid var(--scarlet);border-radius:0 8px 8px 0;background:var(--tint);font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere}
 
 /* ---------- Ranks ---------- */
 .rank-list{display:grid}
 .rank{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:14px;padding:12px 0;border-top:2px solid var(--line)}
 .rank:first-child{border-top:0;padding-top:2px}
-.badge{width:44px;height:44px;display:grid;place-items:center;padding-bottom:5px;background:var(--scarlet);color:var(--cream);clip-path:polygon(0 0,100% 0,100% 78%,50% 100%,0 78%);font:700 15px/1 var(--display);letter-spacing:.02em}
+/* Rank badges reuse the Nebraska shield frame. */
+.badge{width:48px;height:48px;display:grid;place-items:center;padding-bottom:7px;background:url(/brand/badge.svg) center/contain no-repeat;color:var(--cream);font:700 15px/1 var(--display);letter-spacing:.02em}
+.badge[style*="t-unranked"]{background-image:url(/brand/badge-open.svg);color:var(--scarlet)}
 .rank-pl{font:600 11.5px var(--text);letter-spacing:.08em;text-transform:uppercase}
 .rank-tier{font:700 18px/1.2 var(--display);text-transform:uppercase;letter-spacing:.02em}
 .rank-tier .div{font:500 12.5px var(--text);text-transform:none;letter-spacing:0;margin-left:7px}
 .rank-tier.unset{opacity:.55}
 .rank-nums{display:grid;justify-items:end;text-align:right}
-.mmr{font:700 26px/1 var(--display);font-variant-numeric:tabular-nums}
+.mmr{font:700 30px/1 var(--display);font-variant-numeric:tabular-nums}
 .mmr .unit{font:600 11px var(--text);letter-spacing:.06em;margin-left:4px}
 .wk{margin-top:3px;font:600 13px var(--display);text-transform:uppercase;letter-spacing:.03em;font-variant-numeric:tabular-nums}
 .wk.up::before{content:"▲ ";font-size:9px;vertical-align:1px}
@@ -257,7 +264,13 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .rrow{display:grid;grid-template-columns:minmax(0,1fr) 64px 72px 96px;align-items:center;gap:10px;width:100%;padding:12px 10px;text-align:left;background:none;border:0;border-bottom:2px solid var(--line);color:inherit;font:inherit}
 .rrow:last-child{border-bottom:0}
 button.rrow:hover{background:var(--tint)}
-.rrow[aria-current="true"]{background:var(--tint);box-shadow:inset 4px 0 0 var(--scarlet)}
+button.rrow[aria-current="true"]{background:var(--scarlet);color:var(--cream);border-radius:12px;border-bottom-color:transparent}
+button.rrow[aria-current="true"]:hover{background:var(--alizarin)}
+.rrow:has(+ .rrow[aria-current="true"]){border-bottom-color:transparent}
+.rrow[aria-current="true"] .pill{border-color:var(--cream)}
+.rrow[aria-current="true"] .pill.live,.rrow[aria-current="true"] .pill.done{background:var(--cream);color:var(--scarlet)}
+.rrow[aria-current="true"] .pill.live::before{background:var(--scarlet)}
+.rrow[aria-current="true"]:focus-visible{outline-offset:2px}
 .rrow.rh{padding-block:9px 7px;font:600 13px var(--display);text-transform:uppercase;letter-spacing:.07em;border-bottom-color:var(--scarlet)}
 .rname{font-weight:600;overflow-wrap:anywhere}
 .bteam{margin-left:8px;font:600 10.5px var(--text);letter-spacing:.08em;text-transform:uppercase;opacity:.8}
@@ -281,6 +294,10 @@ button.rrow:hover{background:var(--tint)}
 .board li.me{background:var(--tint);border-radius:12px;border-top-color:transparent}
 .board li.me + li{border-top-color:transparent}
 .board li.me .bn{font-weight:600}
+.board li.lead{align-items:center;margin-bottom:4px;padding:16px;border:0;border-radius:16px;background:var(--scarlet) url(/brand/shape-tr.svg) right top/auto 120% no-repeat;color:var(--cream)}
+.board li.lead + li{border-top-color:transparent}
+.board li.lead::before,.board li.lead .bg{font-size:36px;line-height:1}
+.board li.lead .bn{font:700 24px/1 var(--display);text-transform:uppercase;letter-spacing:.02em}
 .board li.none{display:block;text-align:center;font-style:italic}
 .board li.none::before{content:none}
 
@@ -302,21 +319,33 @@ button.rrow:hover{background:var(--tint)}
 .pd-sess .row .danger{margin-left:auto}
 .pd-line{font-size:13px;font-weight:600;overflow-wrap:anywhere}
 .pd-line.muted{font-weight:400}
-.pd-refl{font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}
-.pd-refl b{font-weight:600}
+.pd-refl{font-size:13px;font-style:italic;white-space:pre-wrap;overflow-wrap:anywhere}
+.pd-refl b,.wl-note b{font-weight:600;font-style:normal}
 .note-ed{display:grid;gap:8px}
 .ro{display:grid;gap:4px}
 #pdStats{gap:14px}
 #pdStats > .status.err{font-family:var(--display);text-transform:uppercase;letter-spacing:.04em;font-size:14px}
 #pdStats > .status.err::before{content:none}
 
-/* ---------- Sign on: the brand's concave scarlet shape in the corner ---------- */
+/* ---------- Sign on: a full scarlet poster, Alizarin shape, cream card ---------- */
 body:has(#winAuth:not([hidden])) .desk{padding-top:clamp(16px,6vh,64px)}
-body:has(#winAuth:not([hidden]))::after{content:"";position:fixed;right:0;bottom:0;z-index:0;width:min(68vw,820px);height:min(58vh,680px);background:url(/brand/corner.svg) right bottom/contain no-repeat;pointer-events:none}
+html:has(#winAuth:not([hidden])),body:has(#winAuth:not([hidden])){background:var(--scarlet)}
+body:has(#winAuth:not([hidden]))::after{content:"";position:fixed;right:0;bottom:0;z-index:0;width:min(78vw,900px);height:min(66vh,750px);background:url(/brand/shape-br.svg) right bottom/contain no-repeat;pointer-events:none}
 .desk{position:relative;z-index:1}
-.signon .wbody{padding:18px 22px 22px}
-.signon .ttl{font-size:30px}
-.signon .tbar{padding:22px 22px 0}
-.signon .btn.primary{min-width:140px}
+.signon{border-color:var(--cream)}
+.signon .wbody{padding:18px 24px 24px}
+.signon .ttl{font-size:44px;line-height:.95}
+.signon .tbar{padding:24px 24px 0}
+.signon .btn.primary{min-width:150px;min-height:46px;font-size:17px}
+.signon :focus-visible{outline-color:var(--scarlet)}
+
+/* ---------- Today: the scarlet composition (Scarlet + Alizarin, cream type) ---------- */
+#winToday{background:var(--scarlet) url(/brand/shape-tr.svg) right top/auto 250px no-repeat;border-color:var(--scarlet);color:var(--cream)}
+#winToday .tmin{border-color:var(--cream);color:var(--cream)}
+#winToday .tmin:hover{background:var(--alizarin)}
+#winToday :focus-visible{outline-color:var(--cream)}
+#winToday .card{background:var(--cream);border-color:var(--cream);color:var(--scarlet)}
+#winToday .card :focus-visible{outline-color:var(--scarlet)}
+#winToday .wbody{gap:18px;padding-top:6px}
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

@@ -203,11 +203,12 @@
       list.textContent = "";
       if (!S.board) return;
       if (!S.board.length) { list.append(mk("li", "none", "No players yet")); return; }
-      for (const r of S.board) {
-        const li = mk("li", String(r.name).toLowerCase() === me ? "me" : "");
+      S.board.forEach((r, i) => {
+        // The top spot is only featured once someone has actually logged games.
+        const li = mk("li", [String(r.name).toLowerCase() === me ? "me" : "", i === 0 && r.games > 0 ? "lead" : ""].join(" ").trim());
         li.append(mk("span", "bn", r.name), mk("span", "bg", String(r.games)));
         list.append(li);
-      }
+      });
     });
   }
   function flushAll() { for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; flush(k); } }
