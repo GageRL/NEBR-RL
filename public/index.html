@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Nebraska Esports</title>
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#a60000">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='6' fill='%23D00000'/%3E%3Crect x='7' y='9' width='18' height='3' rx='1.5' fill='%23F5F1E7'/%3E%3Crect x='7' y='15' width='12' height='3' rx='1.5' fill='%23F5F1E7'/%3E%3Crect x='7' y='21' width='15' height='3' rx='1.5' fill='%23F5F1E7'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="desk">
+  <header class="masthead">
+    <h1 id="teamTitle">Nebraska Esports</h1>
+    <p id="connState" class="conn" data-state="idle" role="status"></p>
+  </header>
+
+  <!-- Sign on / first-time setup -->
+  <section class="win signon" id="winAuth" aria-labelledby="tAuth" hidden>
+    <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tAuth">Sign On</h2></div>
+    <form class="wbody" id="authForm" novalidate>
+      <label class="fld"><span class="lbl">Name</span><input type="text" id="authName" maxlength="32" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
+      <label class="fld"><span class="lbl">Password</span><input type="password" id="authPw" maxlength="128" autocomplete="current-password"></label>
+      <label class="fld" id="authPw2Row" hidden><span class="lbl">Confirm password</span><input type="password" id="authPw2" maxlength="128" autocomplete="new-password"></label>
+      <p class="status" id="authStatus" role="status"></p>
+      <div class="row end"><button type="submit" class="btn primary" id="authGo">Sign On</button></div>
+    </form>
+  </section>
+
+  <p class="empty" id="loadingNote">Loading…</p>
+
+  <!-- Player view -->
+  <section id="viewPlayer" class="view" aria-label="My training" hidden>
+    <div class="cols">
+      <div class="col">
+        <section class="win" id="winToday" aria-labelledby="tToday">
+          <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tToday">Today</h2><button type="button" class="tmin" aria-label="Minimize Today" aria-expanded="true">_</button></div>
+          <div class="wbody">
+            <div class="spread"><p class="big-date" id="todayDate"></p><p class="fine" id="todayKind"></p></div>
+            <div class="stack" id="activeBox"></div>
+            <div class="stack" id="plannedBox"></div>
+            <form class="adhoc" id="adhocForm">
+              <select id="adhocType" aria-label="Session type"></select>
+              <button type="submit" class="btn" id="adhocGo">Check in</button>
+            </form>
+            <div class="stack" id="doneBox"></div>
+          </div>
+        </section>
+
+        <section class="win" id="winRanks" aria-labelledby="tRanks">
+          <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tRanks">Ranks</h2><button type="button" class="tmin" aria-label="Minimize Ranks" aria-expanded="true">_</button></div>
+          <div class="wbody">
+            <ul class="rank-list" id="rankList"></ul>
+            <p class="fine" id="rankUpdated"></p>
+          </div>
+        </section>
+      </div>
+
+      <div class="col">
+        <section class="win" id="winWeek" aria-labelledby="tWeek">
+          <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tWeek">My Week</h2><button type="button" class="tmin" aria-label="Minimize My Week" aria-expanded="true">_</button></div>
+          <div class="wbody">
+            <div class="weeknav">
+              <button type="button" class="btn sm" id="wkPrev" aria-label="Previous week">◀</button>
+              <p class="wk-label" id="wkLabel"></p>
+              <button type="button" class="btn sm" id="wkNext" aria-label="Next week">▶</button>
+              <button type="button" class="btn sm" id="wkThis">Today</button>
+            </div>
+            <div class="reqs" id="reqBox"></div>
+            <p class="verdict" id="verdict"></p>
+            <div class="days" id="dayList"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- Coach view -->
+  <section id="viewCoach" class="view" aria-label="Coach" hidden>
+    <div class="cols">
+      <div class="col">
+        <section class="win" id="winRoster" aria-labelledby="tRoster">
+          <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tRoster">Roster</h2><button type="button" class="tmin" aria-label="Minimize Roster" aria-expanded="true">_</button></div>
+          <div class="wbody">
+            <div class="weeknav">
+              <button type="button" class="btn sm" id="cwPrev" aria-label="Previous week">◀</button>
+              <p class="wk-label" id="cwLabel"></p>
+              <button type="button" class="btn sm" id="cwNext" aria-label="Next week">▶</button>
+              <button type="button" class="btn sm" id="cwThis">Today</button>
+              <button type="button" class="btn sm primary push" id="addOpen">+ Player</button>
+            </div>
+            <form class="sub" id="addForm" novalidate hidden>
+              <div class="add-grid">
+                <label class="fld"><span class="lbl">Name</span><input type="text" id="addName" maxlength="32" autocomplete="off" spellcheck="false"></label>
+                <label class="fld"><span class="lbl">Password</span><span class="pw-row"><input type="text" id="addPw" maxlength="128" autocomplete="off" spellcheck="false"><button type="button" class="btn sm" id="addGen">New</button></span></label>
+                <label class="fld wide"><span class="lbl">Tracker link</span><input type="url" id="addTracker" placeholder="rocketleague.tracker.network/…" autocomplete="off"></label>
+              </div>
+              <p class="status" id="addStatus" role="status"></p>
+              <div class="row end"><button type="button" class="btn" id="addCancel">Close</button><button type="submit" class="btn primary">Add</button></div>
+            </form>
+            <div class="legend" aria-label="Status key">
+              <span><i class="bstat live"></i>In session</span><span><i class="bstat behind"></i>Behind</span><span><i class="bstat onpace"></i>On pace</span><span><i class="bstat done"></i>Done</span><span><i class="bstat noplan"></i>No plan</span>
+            </div>
+            <div class="roster" id="rosterList"></div>
+            <p class="empty" id="rosterEmpty">No players yet.</p>
+          </div>
+        </section>
+      </div>
+      <div class="col">
+        <section class="win" id="winPlayer" aria-labelledby="tPlayer">
+          <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tPlayer">Player</h2><button type="button" class="tmin" aria-label="Minimize Player" aria-expanded="true">_</button></div>
+          <div class="wbody" id="pdBody"></div>
+        </section>
+
+        <section class="win" id="winTeam" aria-labelledby="tTeam">
+          <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tTeam">Team</h2><button type="button" class="tmin" aria-label="Minimize Team" aria-expanded="true">_</button></div>
+          <form class="wbody" id="teamForm" novalidate>
+            <label class="fld"><span class="lbl">Title</span><input type="text" id="setTitle" maxlength="60"></label>
+            <div class="grp">
+              <h3>Weekly</h3>
+              <div class="set-grid">
+                <label for="setHours">Individual hours<input type="number" id="setHours" min="0" max="80" step="0.5"></label>
+                <label for="setScrims">Scrims<input type="number" id="setScrims" min="0" max="21" step="1"></label>
+                <label for="setPhysDays">Physical days<input type="number" id="setPhysDays" min="0" max="7" step="1"></label>
+                <label for="setPhysMin">Physical min/day<input type="number" id="setPhysMin" min="0" max="300" step="5"></label>
+                <label for="setMinDays">Training days<input type="number" id="setMinDays" min="0" max="7" step="1"></label>
+              </div>
+            </div>
+            <div class="grp">
+              <h3>Ranked Session goals</h3>
+              <div class="set-grid" id="goalGrid"></div>
+            </div>
+            <p class="status" id="setStatus" role="status"></p>
+            <div class="row end"><button type="submit" class="btn primary">Save</button></div>
+          </form>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- Account -->
+  <section class="win account" id="winAccount" aria-labelledby="tAccount" hidden>
+    <div class="tbar"><span class="ticon" aria-hidden="true"></span><h2 class="ttl" id="tAccount">Account</h2><button type="button" class="tmin" id="accClose" aria-label="Close Account">×</button></div>
+    <form class="wbody" id="pwForm" novalidate>
+      <p class="big-date" id="accName"></p>
+      <label class="fld"><span class="lbl">Current password</span><input type="password" id="pwCur" autocomplete="current-password" maxlength="128"></label>
+      <label class="fld"><span class="lbl">New password</span><input type="password" id="pwNew" autocomplete="new-password" maxlength="128"></label>
+      <p class="status" id="pwStatus" role="status"></p>
+      <div class="row spread"><button type="button" class="btn" id="signOff">Sign off</button><button type="submit" class="btn primary">Change password</button></div>
+    </form>
+  </section>
+</div>
+
+<nav class="taskbar" aria-label="Windows">
+  <div class="tasks" id="taskBtns"></div>
+  <span class="clock" id="clock"></span>
+</nav>
+
+<script src="/app.js" defer></script>
+</body>
+</html>
