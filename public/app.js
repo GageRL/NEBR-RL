@@ -305,7 +305,6 @@
     for (const [label, sel] of secs) add(label, "sec", null, () => showWin(sel));
     add(S.me.name || "Account", "acct", null, openAccount);
   }
-  function tickClock() { $("#clock").textContent = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }); }
 
   /* ---------- Auth ---------- */
   function renderAuth() {
@@ -675,7 +674,8 @@
 
   /* ---------- Ranks ---------- */
   function tierColor(tier) { if (!tier) return "--t-unranked"; if (tier === "Supersonic Legend") return TIER_COLOR[tier]; return TIER_COLOR[tier.replace(/ (I|II|III)$/, "")] || "--t-unranked"; }
-  function tierMark(tier) { if (!tier || tier === "Unranked") return "–"; if (tier === "Supersonic Legend") return "SSL"; const m = tier.match(/ (I|II|III)$/); return m ? m[1] : ""; }
+  const TIER_CODE = { Bronze: "B", Silver: "S", Gold: "G", Platinum: "P", Diamond: "D", Champion: "C", "Grand Champion": "GC" };
+  function tierMark(tier) { if (!tier || tier === "Unranked") return "–"; if (tier === "Supersonic Legend") return "SSL"; const m = tier.match(/^(.+) (I{1,3})$/); return m ? (TIER_CODE[m[1]] || "") + m[2].length : ""; }
   /* MMR history: points only where MMR changed, ascending by time. */
   function normHist(h) {
     return (Array.isArray(h) ? h : []).filter(x => isPlain(x) && Number.isFinite(Number(x.at)))
@@ -1214,7 +1214,6 @@
   setInterval(() => { const a = S.me && S.me.active; if (a) { const t = document.querySelector("#activeBox .ctime"); if (t) t.textContent = hms(a.startedAt); } }, 1000);
   let ticks = 0;
   setInterval(() => {
-    tickClock();
     if (S.phase !== "app") return;
     ticks++;
     const t = todayStr();
@@ -1230,6 +1229,5 @@
     if (ticks % 10 === 0) refresh();
   }, 30000);
 
-  tickClock();
   boot();
 })();
