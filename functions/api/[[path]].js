@@ -387,7 +387,7 @@ async function route(db, req, method, segs, body, user) {
   if (method === "GET" && a === "leaderboard" && b && !c) {
     // Ranked games logged this week, per player. Names and counts only.
     const wk = weekId(b);
-    const { results } = await db.prepare("SELECT u.username AS name, w.data AS data FROM users u LEFT JOIN weeks w ON w.user_id = u.id AND w.week = ? WHERE u.role = 'player'").bind(wk).all();
+    const { results } = await db.prepare("SELECT u.username AS name, w.data AS data FROM users u LEFT JOIN weeks w ON w.user_id = u.id AND w.week = ? WHERE u.role IN ('player', 'coach')").bind(wk).all();
     const rows = results.map(r => {
       const d = parse(r.data, {});
       let games = 0;
