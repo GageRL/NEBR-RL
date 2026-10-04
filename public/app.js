@@ -391,6 +391,8 @@
     w.hidden = false;
     $("#accName").textContent = S.me.name + (S.me.team ? " · " + teamName(S.me.team) : "");
     setStatus($("#pwStatus"), "");
+    setStatus($("#pushStatus"), "");
+    renderAppBox();
     w.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
   }
   $("#accClose").addEventListener("click", () => { $("#winAccount").hidden = true; });
@@ -405,7 +407,10 @@
   });
   $("#signOff").addEventListener("click", async () => {
     flushAll();
-    try { await api("POST", "logout", {}); } catch (_) {}
+    // This device stops getting the old account's notifications.
+    try { await api("POST", "logout", pushSub ? { endpoint: pushSub.endpoint } : {}); } catch (_) {}
+    if (pushSub) { try { await pushSub.unsubscribe(); } catch (_) {} pushSub = null; }
+    pushSynced = false;
     S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null;
     $("#winAccount").hidden = true;
     setStatus($("#authStatus"), "");
@@ -1599,6 +1604,144 @@
   });
   document.addEventListener("dragend", () => { dragId = null; document.querySelectorAll(".drag-over").forEach(x => x.classList.remove("drag-over")); });
 
+  /* ---------- App install + notifications ---------- */
+  const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isPhone = () => matchMedia("(max-width: 820px)").matches && navigator.maxTouchPoints > 0;
+  const pushOK = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  let installEvt = null, swReg = null, pushSub = null, pushSynced = false;
+  function unb64url(s) { s = s.replace(/-/g, "+").replace(/_/g, "/"); return Uint8Array.from(atob(s + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0)); }
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").then(async r => {
+      swReg = r;
+      try { pushSub = await r.pushManager.getSubscription(); } catch (_) {}
+      syncPush(); renderAppBox();
+    }).catch(() => {});
+    navigator.serviceWorker.addEventListener("message", e => {
+      const m = e.data || {};
+      if (m.type === "refresh") refresh();
+      else if (m.type === "go") goTo(m.url);
+    });
+  }
+  window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); installEvt = e; renderAppBox(); });
+  window.addEventListener("appinstalled", () => { installEvt = null; renderAppBox(); });
+  async function doInstall() {
+    if (!installEvt) return;
+    const ev = installEvt;
+    ev.prompt();
+    try { await ev.userChoice; } catch (_) {}
+    installEvt = null;
+    renderAppBox();
+  }
+  function pushState() {
+    if (!pushOK()) return isIOS && !standalone() ? "ios-install" : "unsupported";
+    if (Notification.permission === "denied") return "blocked";
+    return pushSub && Notification.permission === "granted" ? "on" : "off";
+  }
+  const pushWhat = () => S.me && S.me.role === "coach" ? "new replay review requests" : "Coach notes and replay reviews";
+  function renderAppBox() {
+    if (!S.me) { renderAppTip(); return; }
+    const inst = standalone();
+    $("#appInstallTxt").textContent = inst ? "\u2713 Installed on this device."
+      : isIOS ? "On iPhone or iPad: open this site in Safari, tap Share, then Add to Home Screen."
+      : installEvt ? "Install it to get its own icon and open full screen."
+      : "Use your browser's menu: Install app or Add to Home screen.";
+    $("#appInstall").hidden = inst || !installEvt;
+    const st = pushState();
+    $("#pushTxt").textContent = {
+      "ios-install": "Add the app to your Home Screen first, then turn on notifications here.",
+      unsupported: "This browser can't show notifications.",
+      blocked: "Notifications are blocked for this site. Allow them in your browser or phone settings.",
+      on: "On for this device: " + pushWhat() + ".",
+      off: "Get " + pushWhat() + " on this device."
+    }[st];
+    $("#pushOn").hidden = st !== "off";
+    $("#pushTest").hidden = $("#pushOff").hidden = st !== "on";
+    renderAppTip();
+  }
+  // Phones only, one at a time: first "get the app", then (inside the app) "turn on notifications". Each can be dismissed.
+  function renderAppTip() {
+    const tip = $("#appTip");
+    let kind = "", text = "", go = "";
+    if (S.phase === "app" && isPhone()) {
+      if (!standalone() && pref.get("tip:install") !== "0") {
+        kind = "install"; go = installEvt ? "Install" : "";
+        text = isIOS ? "Get the app: tap Share, then Add to Home Screen." : installEvt ? "Get the app on your home screen." : "Get the app: open your browser menu and tap Add to Home screen.";
+      } else if (standalone() && pushState() === "off" && pref.get("tip:push") !== "0") {
+        kind = "push"; go = "Turn on"; text = "Turn on notifications for " + pushWhat() + ".";
+      }
+    }
+    tip.hidden = !kind;
+    tip.dataset.kind = kind;
+    $("#appTipText").textContent = text;
+    $("#appTipGo").textContent = go;
+    $("#appTipGo").hidden = !go;
+  }
+  $("#appTipX").addEventListener("click", () => { pref.set("tip:" + $("#appTip").dataset.kind, "0"); renderAppTip(); });
+  $("#appTipGo").addEventListener("click", () => { if ($("#appTip").dataset.kind === "install") doInstall(); else pushEnable(); });
+  $("#appInstall").addEventListener("click", doInstall);
+  async function pushEnable() {
+    const st = $("#pushStatus");
+    setStatus(st, "");
+    try {
+      // Has to be the first thing after the tap, or phones ignore it.
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { renderAppBox(); return; }
+      const reg = swReg || await navigator.serviceWorker.ready;
+      const { key } = await api("GET", "push/key");
+      pushSub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: unb64url(key) });
+      await api("POST", "push/subscribe", pushSub.toJSON());
+      pushSynced = true;
+      setStatus(st, "Notifications are on.", "ok");
+    } catch (err) { setStatus(st, err.message || "Couldn't turn on notifications.", "err"); }
+    renderAppBox();
+  }
+  async function pushDisable() {
+    const sub = pushSub;
+    pushSub = null;
+    if (sub) {
+      try { await api("POST", "push/unsubscribe", { endpoint: sub.endpoint }); } catch (_) {}
+      try { await sub.unsubscribe(); } catch (_) {}
+    }
+    setStatus($("#pushStatus"), "Notifications are off for this device.", "ok");
+    renderAppBox();
+  }
+  $("#pushOn").addEventListener("click", pushEnable);
+  $("#pushOff").addEventListener("click", pushDisable);
+  $("#pushTest").addEventListener("click", async () => {
+    const st = $("#pushStatus"), b = $("#pushTest");
+    b.disabled = true;
+    try {
+      const r = await api("POST", "push/test", {});
+      setStatus(st, r.sent ? "Sent. It should show up in a few seconds." : "Couldn't reach this device. Turn notifications off and on again.", r.sent ? "ok" : "err");
+    } catch (err) { setStatus(st, err.message, "err"); }
+    finally { b.disabled = false; }
+  });
+  // A device that already allowed notifications is re-linked to whoever is signed in.
+  function syncPush() {
+    if (pushSynced || !S.me || !pushSub || !pushOK() || Notification.permission !== "granted") return;
+    pushSynced = true;
+    api("POST", "push/subscribe", pushSub.toJSON()).catch(() => { pushSynced = false; });
+  }
+  // Tapping a notification opens the right section (?go=reviews or ?go=week&wk=YYYY-MM-DD).
+  function goTo(url) {
+    let q;
+    try { q = new URL(url, location.origin).searchParams; } catch (_) { return; }
+    const go = q.get("go");
+    if (!go || S.phase !== "app") return;
+    if (go === "reviews" && S.me.role === "coach") {
+      if (S.view !== "coach") setView("coach");
+      loadCoach();
+      showWin("#winReviews");
+    } else if (go === "week") {
+      if (S.view !== "player") setView("player");
+      const wk = q.get("wk");
+      if (wk && /^\d{4}-\d{2}-\d{2}$/.test(wk)) { S.wk = mondayOf(wk); renderWeek(); }
+      showWin("#winWeek");
+    }
+    refresh();
+  }
+
   /* ---------- Render all ---------- */
   function renderAll() {
     const app = S.phase === "app";
@@ -1613,6 +1756,7 @@
     renderHeader();
     renderConn();
     renderTaskbar();
+    renderAppBox();
     if (!app) { if (S.layEdit) setLayEdit(false); return; }
     applyLayout(S.view);
     renderToday(); renderWeek(); renderRanks();
@@ -1651,6 +1795,8 @@
     renderAll();
     loadBoard();
     if (S.me.role === "coach") loadCoach();
+    syncPush();
+    if (/[?&]go=/.test(location.search)) { const u = location.href; history.replaceState(null, "", "/"); goTo(u); }
   }
   let refreshing = false;
   async function refresh() {

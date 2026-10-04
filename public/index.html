@@ -34,6 +34,11 @@
     <p><span class="lay-desk">Drag a section by its handle, or use the arrows. Set each section's width and height.</span><span class="lay-phone">Use the arrows to move a section. Set each section's height.</span></p>
     <div class="row"><button type="button" class="btn sm" id="layReset">Reset layout</button><button type="button" class="btn sm primary" id="layDone">Done</button></div>
   </div>
+  <!-- Phones: a one-time nudge to install the app, then to turn on notifications -->
+  <div class="app-tip" id="appTip" hidden>
+    <p id="appTipText"></p>
+    <div class="row"><button type="button" class="btn sm" id="appTipX">Not now</button><button type="button" class="btn sm primary" id="appTipGo" hidden></button></div>
+  </div>
   <!-- Sign on / first-time setup -->
   <section class="win signon" id="winAuth" aria-labelledby="tAuth" hidden>
     <div class="tbar"><h2 class="ttl" id="tAuth">Sign On</h2></div>
@@ -180,6 +185,19 @@
       <p class="status" id="pwStatus" role="status"></p>
       <div class="row spread"><button type="button" class="btn" id="signOff">Sign off</button><button type="submit" class="btn primary">Change password</button></div>
     </form>
+    <div class="wbody app-box" id="appBox">
+      <div class="grp">
+        <h3>App</h3>
+        <p class="fine" id="appInstallTxt"></p>
+        <div class="row"><button type="button" class="btn sm primary" id="appInstall" hidden>Install app</button></div>
+      </div>
+      <div class="grp">
+        <h3>Notifications</h3>
+        <p class="fine" id="pushTxt"></p>
+        <div class="row"><button type="button" class="btn sm primary" id="pushOn" hidden>Turn on notifications</button><button type="button" class="btn sm" id="pushTest" hidden>Send a test</button><button type="button" class="btn sm" id="pushOff" hidden>Turn off</button></div>
+        <p class="status" id="pushStatus" role="status"></p>
+      </div>
+    </div>
   </section>
 </main>
 

@@ -409,3 +409,7 @@ body:has(#winAuth:not([hidden]))::after{content:"";position:fixed;right:0;bottom
 .rv-card.done{opacity:.75}
 .task[data-count]{display:inline-flex;align-items:center;gap:6px}
 .task[data-count]::after{content:attr(data-count);position:static;padding:2px 6px;border-radius:999px;background:var(--cream);color:var(--scarlet);font:700 11px/1 var(--text);transform:none;height:auto}
+
+/* ---------- App install + notifications ---------- */
+.app-tip{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;padding:12px 16px;border:2px solid var(--scarlet);border-radius:14px;font-weight:500}
+.app-box{padding-top:0}
