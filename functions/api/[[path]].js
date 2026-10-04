@@ -474,7 +474,8 @@ function pub(u) {
     customFocus: parse(u.custom_focus, []),
     targetsLog: normPlayerLog(parse(u.targets, [])),
     prefs: normPrefs(parse(u.prefs, {})),
-    createdAt: u.created_at
+    createdAt: u.created_at,
+    ...(u.admin ? { admin: true } : {})
   };
 }
 async function getSettings(db, school) {
@@ -716,7 +717,9 @@ async function schoolRequest(ctx, slug, segs, legacy) {
   // Public files for this school (logo, app icon, install manifest) come before the sign-in check.
   if (ctx.method === "GET" && segs[0] === "asset") return assetResponse(db, school, segs[1]);
   if (ctx.method === "GET" && segs[0] === "manifest") return manifestResponse(db, school);
-  const user = await currentUser(db, req, jar, school);
+  let user = await currentUser(db, req, jar, school);
+  // The Backpost admin can open any school on getbackpost.com and manage it like a coach.
+  if (!user && !legacy) { const adm = await currentAdmin(db, req); if (adm) user = adminAsCoach(adm, school); }
   const res = await route(Object.assign({}, ctx, { school, jar, user }), segs);
   // Sign-ins renew themselves: any request in the last 29 days of a session pushes it out to 30 again.
   if (user && !res.headers.has("Set-Cookie") && user.s_exp - Date.now() < (SESSION_DAYS - 1) * 864e5) {
@@ -839,10 +842,12 @@ async function route(ctx, segs) {
   if (key === "GET state") {
     const settings = await getSettings(db, school);
     const info = { slug: school.id, name: school.name, status: school.status, base: school.base };
-    if (school.status !== "active") return json({ school: info, me: null, settings: publicSettings(settings), paused: true });
-    return json({ school: info, needsSetup: false, me: user ? pub(user) : null, settings: user ? settings : publicSettings(settings) });
+    const isAdmin = !!(user && user.admin);
+    if (school.status !== "active" && !isAdmin) return json({ school: info, me: null, settings: publicSettings(settings), paused: true });
+    return json({ school: info, needsSetup: false, me: user ? pub(user) : null, settings: user ? settings : publicSettings(settings), paused: school.status !== "active" });
   }
-  if (school.status !== "active") fail(403, "This school is paused on Backpost.");
+  // A paused school is closed to its members; the admin can still manage it.
+  if (school.status !== "active" && !(user && user.admin)) fail(403, "This school is paused on Backpost.");
   if (key === "POST login") {
     const name = cleanName(body.name);
     const u = name ? await db.prepare("SELECT * FROM users WHERE school_id = ? AND username = ? COLLATE NOCASE").bind(school.id, name).first() : null;
@@ -858,9 +863,9 @@ async function route(ctx, segs) {
     return json({ me: pub(u) }, 200, { "Set-Cookie": await startSession(db, req, jar, u.id) });
   }
   if (key === "POST logout") {
-    if (user) await db.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(user.s_hash).run();
+    if (user && !user.admin) await db.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(user.s_hash).run();
     // Signing off a device also stops its notifications.
-    if (user && body.endpoint) await db.prepare("DELETE FROM push_subs WHERE endpoint = ? AND user_id = ?").bind(String(body.endpoint), user.id).run();
+    if (user && !user.admin && body.endpoint) await db.prepare("DELETE FROM push_subs WHERE endpoint = ? AND user_id = ?").bind(String(body.endpoint), user.id).run();
     return json({ ok: true }, 200, { "Set-Cookie": setCookie(req, jar, "", 0) });
   }
 
@@ -868,6 +873,16 @@ async function route(ctx, segs) {
   const st = await getSettings(db, school);
   // Notifications carry the school's own app icon.
   const notifyS = (ids, msg) => notify(db, ids, Object.assign({ icon: st.icon || "" }, msg));
+
+  // The admin has no training, schedule answers, reviews or notifications of their own here.
+  if (user.admin && a !== "coach") {
+    if (key === "GET me" || key === "PATCH me") return json({ me: pub(user) });
+    if (key === "GET weeks") return json({ weeks: [] });
+    if (key === "GET ranks/history") return json({ history: [] });
+    if (key === "GET reviews") return json({ reviews: [] });
+    if (key === "GET events") return json({ access: false, events: [] });
+    if (key !== "GET push/key" && !(method === "GET" && a === "leaderboard")) fail(403, "You're managing this team as the Backpost admin. This part is for team members.");
+  }
 
   /* ----- signed-in member ----- */
   if (key === "GET me") return json({ me: pub(user) });
@@ -1007,14 +1022,16 @@ async function route(ctx, segs) {
       const name = cleanName(body.name);
       if (!name) fail(400, "Enter a name.");
       if (await nameTaken(db, school, name, null)) fail(409, "That name is taken.");
-      const pw = checkNewPw(body.password, 6);
+      // The admin can add a coach directly; coaches add players.
+      const role = user.admin && body.role === "coach" ? "coach" : "player";
+      const pw = checkNewPw(body.password, role === "coach" ? 8 : 6);
       const raw = String(body.trackerUrl || "").trim();
       const url = trackerUrl(raw);
       if (raw && !url) fail(400, "That isn't a Rocket League Tracker profile link.");
       const id = newId();
-      const team = rosterIds.includes(body.team) ? body.team : rosterIds[0];
-      await db.prepare("INSERT INTO users (id, school_id, username, role, team, pw_hash, tracker_url, created_at) VALUES (?, ?, ?, 'player', ?, ?, ?, ?)")
-        .bind(id, school.id, name, team, await makePw(pw), url || null, Date.now()).run();
+      const team = role === "coach" ? null : rosterIds.includes(body.team) ? body.team : rosterIds[0];
+      await db.prepare("INSERT INTO users (id, school_id, username, role, team, pw_hash, tracker_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(id, school.id, name, role, team, await makePw(pw), url || null, Date.now()).run();
       const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
       return json({ player: pub(u) });
     }
@@ -1070,7 +1087,7 @@ async function route(ctx, segs) {
       }
       if (segs[3] === "history" && method === "GET") return json({ history: await readHistory(db, c) });
       if (!segs[3] && method === "DELETE") {
-        if (target.role === "coach") fail(400, "Coach accounts are removed from the Backpost admin.");
+        if (target.role === "coach" && !user.admin) fail(400, "Only the Backpost admin can remove a coach account.");
         await db.batch([
           db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM weeks WHERE user_id = ?").bind(c),
@@ -1084,6 +1101,15 @@ async function route(ctx, segs) {
       }
       if (!segs[3] && method === "PATCH") {
         const sets = [], vals = [], extra = [];
+        // Only the Backpost admin can make someone a coach or a player.
+        let role = target.role;
+        if ("role" in body && body.role !== target.role) {
+          if (!user.admin) fail(403, "Only the Backpost admin can change who's a coach.");
+          role = body.role === "coach" ? "coach" : "player";
+          sets.push("role = ?"); vals.push(role);
+          if (role === "player" && !("team" in body) && !rosterIds.includes(target.team)) { sets.push("team = ?"); vals.push(rosterIds[0]); }
+          if (role === "coach") sets.push("team = NULL");
+        }
         if ("name" in body) {
           const name = cleanName(body.name);
           if (!name) fail(400, "Enter a name.");
@@ -1091,7 +1117,7 @@ async function route(ctx, segs) {
           sets.push("username = ?"); vals.push(name);
         }
         if ("team" in body) {
-          if (target.role === "coach") fail(400, "Coaches aren't on a roster.");
+          if (role === "coach") fail(400, "Coaches aren't on a roster.");
           if (!rosterIds.includes(body.team)) fail(400, "Pick one of your rosters.");
           sets.push("team = ?"); vals.push(body.team);
         }
@@ -1102,13 +1128,13 @@ async function route(ctx, segs) {
           sets.push("tracker_url = ?"); vals.push(url || null);
         }
         if ("password" in body) {
-          if (target.role === "coach") fail(400, "Coaches change their own password from Account.");
-          const pw = checkNewPw(body.password, 6);
+          if (role === "coach" && !user.admin) fail(400, "Coaches change their own password from Account.");
+          const pw = checkNewPw(body.password, role === "coach" ? 8 : 6);
           sets.push("pw_hash = ?", "fail_count = 0", "locked_until = 0"); vals.push(await makePw(pw));
           extra.push(db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(c));
         }
         if ("targets" in body) {
-          if (target.role === "coach") fail(400, "Coaches don't have a weekly requirement.");
+          if (role === "coach") fail(400, "Coaches don't have a weekly requirement.");
           const t = isPlain(body.targets) ? body.targets : {};
           const own = v => (v === null || v === undefined || v === "" ? null : intIn(v, 14));
           const log = logPut(normPlayerLog(parse(target.targets, [])), { from: weekFrom(body.from), ranked: own(t.ranked), training: own(t.training) }, { from: LOG_START, ranked: null, training: null });
@@ -1247,7 +1273,18 @@ async function route(ctx, segs) {
 }
 
 /* ---------- Platform admin (Gage): schools, invites, access requests ---------- */
-const ADMIN_JAR = { name: "bp_a", path: "/api/admin" };
+// The admin sign-in is sent to every /api route so the admin can manage any school as a coach.
+// (Before that it lived at /api/admin only; OLD_ADMIN_JAR is cleared when the admin page loads.)
+const ADMIN_JAR = { name: "bp_a", path: "/api" };
+const OLD_ADMIN_JAR = { name: "bp_a", path: "/api/admin" };
+// The admin, inside a school: a coach with a few extra powers (coach accounts, nothing personal).
+function adminAsCoach(adm, school) {
+  return {
+    id: "admin-" + adm.id, username: adm.username, role: "coach", team: null, school_id: school.id, admin: true,
+    tracker_url: "", ranks: null, active: null, custom_focus: null, targets: null, prefs: null,
+    created_at: adm.created_at, s_exp: Infinity, s_hash: null
+  };
+}
 async function currentAdmin(db, req) {
   const t = readCookie(req, ADMIN_JAR.name);
   if (!t) return null;
@@ -1289,7 +1326,13 @@ async function adminRoute(ctx, segs) {
   if (key === "GET state") {
     const any = await db.prepare("SELECT 1 AS x FROM admins LIMIT 1").first();
     const founder = any ? null : await loadSchool(db, LEGACY_SCHOOL);
-    return json({ needsSetup: !any, founder: founder ? { slug: founder.id, name: founder.name } : null, me: admin ? { id: admin.id, name: admin.username } : null });
+    const res = json({ needsSetup: !any, founder: founder ? { slug: founder.id, name: founder.name } : null, me: admin ? { id: admin.id, name: admin.username } : null });
+    if (admin) {
+      // Move an older admin sign-in (sent only to /api/admin) to /api, keeping when it ends.
+      res.headers.append("Set-Cookie", setCookie(req, OLD_ADMIN_JAR, "", 0));
+      res.headers.append("Set-Cookie", setCookie(req, ADMIN_JAR, readCookie(req, ADMIN_JAR.name), Math.max(60, Math.floor((admin.s_exp - Date.now()) / 1000))));
+    }
+    return res;
   }
   if (key === "POST setup") {
     // Open first-run setup would let anyone claim the admin account, so it needs the
@@ -1313,7 +1356,9 @@ async function adminRoute(ctx, segs) {
   }
   if (key === "POST logout") {
     if (admin) await db.prepare("DELETE FROM admin_sessions WHERE token_hash = ?").bind(admin.s_hash).run();
-    return json({ ok: true }, 200, { "Set-Cookie": setCookie(req, ADMIN_JAR, "", 0) });
+    const res = json({ ok: true }, 200, { "Set-Cookie": setCookie(req, ADMIN_JAR, "", 0) });
+    res.headers.append("Set-Cookie", setCookie(req, OLD_ADMIN_JAR, "", 0));
+    return res;
   }
   if (!admin) fail(401, "Signed out. Sign in again.");
 
@@ -1358,8 +1403,28 @@ async function adminRoute(ctx, segs) {
       const sets = [], vals = [];
       if ("name" in body) { const n = cleanName(body.name).slice(0, 60); if (!n) fail(400, "Enter a name."); sets.push("name = ?"); vals.push(n); }
       if ("status" in body) { sets.push("status = ?"); vals.push(body.status === "paused" ? "paused" : "active"); }
-      if (sets.length) await db.prepare("UPDATE schools SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, b).run();
-      const r = await db.prepare("SELECT * FROM schools WHERE id = ?").bind(b).first();
+      let id = b;
+      const want = "slug" in body ? String(body.slug || "").trim().toLowerCase() : b;
+      if (want !== b) {
+        // A new web address: everything in the school moves with it. Sign-ins are tied to the old
+        // address, so everyone signs in again at the new one.
+        if (b === LEGACY_SCHOOL) fail(400, "Nebraska keeps getbackpost.com/" + LEGACY_SCHOOL + " so the original site address keeps working.");
+        if (!isSlug(want)) fail(400, "The web address can use letters, numbers and dashes (2 to 32 characters).");
+        if (await db.prepare("SELECT 1 AS x FROM schools WHERE id = ?").bind(want).first()) fail(409, "getbackpost.com/" + want + " is already taken.");
+        const row = await db.prepare("SELECT data FROM school_settings WHERE school_id = ?").bind(b).first();
+        const data = row ? row.data.split("/api/s/" + b + "/asset/").join("/api/s/" + want + "/asset/") : null;
+        const move = t => db.prepare("UPDATE " + t + " SET school_id = ? WHERE school_id = ?").bind(want, b);
+        await db.batch([
+          db.prepare("UPDATE schools SET id = ? WHERE id = ?").bind(want, b),
+          move("school_settings"), move("school_assets"), move("users"), move("weeks"), move("reviews"), move("events"), move("invites"),
+          ...(data ? [db.prepare("UPDATE school_settings SET data = ? WHERE school_id = ?").bind(data, want)] : []),
+          db.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE school_id = ?)").bind(want)
+        ]);
+        schoolCache.delete(b); schoolCache.delete(want);
+        id = want;
+      }
+      if (sets.length) await db.prepare("UPDATE schools SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, id).run();
+      const r = await db.prepare("SELECT * FROM schools WHERE id = ?").bind(id).first();
       return json({ school: schoolRow(r) });
     }
     if (!c && method === "DELETE") {
