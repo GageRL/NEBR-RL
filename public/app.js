@@ -1012,7 +1012,13 @@
         try { await api("PATCH", "coach/reviews/" + r.id, { status }); r.status = status; renderReviews(); }
         catch (err) { mark.disabled = false; }
       });
-      row.append(mark);
+      const rm = mk("button", "linkbtn rm", "Remove"); rm.type = "button";
+      rm.addEventListener("click", () => armOrRun(rm, async () => {
+        rm.disabled = true;
+        try { await api("DELETE", "coach/reviews/" + r.id); S.reviews = S.reviews.filter(x => x.id !== r.id); renderReviews(); }
+        catch (err) { rm.disabled = false; }
+      }, "Confirm"));
+      row.append(rm, mark);
       c.append(row);
       return c;
     };

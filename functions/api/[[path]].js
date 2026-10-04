@@ -739,6 +739,10 @@ async function route(db, req, method, segs, body, user) {
       await db.prepare("UPDATE reviews SET status = ?, done_at = ? WHERE id = ?").bind(status, status === "done" ? Date.now() : null, c).run();
       return json({ ok: true, status });
     }
+    if (b === "reviews" && c && method === "DELETE") {
+      await db.prepare("DELETE FROM reviews WHERE id = ?").bind(c).run();
+      return json({ ok: true });
+    }
     if (key === "GET coach/trackers") {
       const { results } = await db.prepare("SELECT id, username, tracker_url FROM users WHERE tracker_url IS NOT NULL AND tracker_url <> '' ORDER BY username COLLATE NOCASE").all();
       return json({ players: results.map(r => ({ id: r.id, name: r.username, trackerUrl: r.tracker_url })) });
