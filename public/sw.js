@@ -10,8 +10,8 @@ self.addEventListener("push", e => {
     await self.registration.showNotification(m.title || "Nebraska Esports", {
       body: m.body || "",
       tag: m.tag || undefined,
-      icon: "/icons/icon-192.png",
-      badge: "/icons/badge-96.png",
+      icon: m.icon || "/bp/icon-192.png",
+      badge: "/bp/badge-96.png",
       data: { url: m.url || "/" }
     });
     // An open copy of the app reloads its data so it matches the notification.

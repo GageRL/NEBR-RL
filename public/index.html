@@ -1,177 +1,279 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-shape="angled" data-fonts="arena" data-header="color" data-paper="clean">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Nebraska Esports</title>
-<meta name="robots" content="noindex">
-<meta name="theme-color" content="#d00000">
-<link rel="icon" href="/brand/logo-scarlet.svg" type="image/svg+xml">
-<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
-<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-<link rel="manifest" href="/manifest.webmanifest">
+<title>Backpost</title>
+<meta name="description" content="Training check-ins, weekly requirements, scrims, film and ranks for esports programs. Free for schools.">
+<meta name="theme-color" content="#4289d1" id="themeColor">
+<link rel="icon" href="/bp/favicon-32.png" type="image/png" id="favicon">
+<link rel="apple-touch-icon" href="/bp/apple-touch-icon.png" id="touchIcon">
+<link rel="manifest" id="manifestLink">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="NE Esports">
+<meta name="apple-mobile-web-app-title" content="Backpost" id="appleTitle">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="preload" href="/fonts/oswald.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/fonts/poppins-400.woff2" as="font" type="font/woff2" crossorigin>
+<script>
+/* Which part of the site this is, and the school's look from last visit, before anything paints. */
+(function () {
+  var legacy = window.__BP_LEGACY === true || location.hostname === "nebr-rl.pages.dev";
+  var parts = location.pathname.split("/").filter(Boolean);
+  var first = (parts[0] || "").toLowerCase();
+  var route = legacy ? { kind: "school", slug: "nebraska", base: "/", api: "/api/", legacy: true }
+    : !parts.length ? { kind: "landing" }
+    : first === "admin" ? { kind: "admin" }
+    : first === "join" ? { kind: "join", token: parts[1] || "" }
+    : { kind: "school", slug: first, base: "/" + first, api: "/api/s/" + encodeURIComponent(first) + "/" };
+  window.BP_ROUTE = route;
+  var html = document.documentElement;
+  html.dataset.route = route.kind;
+  if (route.kind !== "school") return;
+  try {
+    var t = JSON.parse(localStorage.getItem("bp:theme:" + route.slug) || "null");
+    if (t && t.vars) { for (var k in t.vars) html.style.setProperty(k, t.vars[k]); for (var a in t.attrs) html.dataset[a] = t.attrs[a]; }
+  } catch (e) {}
+})();
+</script>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+
+<!-- ============ A school's app ============ -->
+<div id="schoolApp" class="shell" hidden>
 <header class="masthead">
   <div class="mast-in">
-    <div class="brand"><img class="logo" src="/brand/logo-cream.svg" alt="" width="56" height="55"><h1 id="teamTitle">Nebraska Esports</h1></div>
+    <div class="brand">
+      <span class="logo-box" id="logoBox"><img class="logo" id="schoolLogo" alt="" hidden><span class="mono-logo" id="monoLogo" aria-hidden="true"></span></span>
+      <h1 id="teamTitle"></h1>
+    </div>
     <p id="connState" class="conn" data-state="idle" role="status"></p>
   </div>
 </header>
 <nav class="taskbar" aria-label="Sections"><div class="tasks" id="taskBtns"></div></nav>
-<div class="swoosh" aria-hidden="true"></div>
 
 <main class="desk">
-  <!-- Layout editing bar: shown while someone rearranges their page -->
-  <div class="lay-bar" id="layBar" hidden>
-    <p><span class="lay-desk">Drag a section by its handle, or use the arrows. Set each section's width and height.</span><span class="lay-phone">Use the arrows to move a section. Set each section's height.</span></p>
-    <div class="row"><button type="button" class="btn sm" id="layReset">Reset layout</button><button type="button" class="btn sm primary" id="layDone">Done</button></div>
-  </div>
-  <!-- Phones: a one-time nudge to install the app, then to turn on notifications -->
   <div class="app-tip" id="appTip" hidden>
     <p id="appTipText"></p>
     <div class="row"><button type="button" class="btn sm" id="appTipX">Not now</button><button type="button" class="btn sm primary" id="appTipGo" hidden></button></div>
   </div>
-  <!-- Sign on / first-time setup -->
+  <div class="lay-bar" id="layBar" hidden>
+    <p><span class="lay-desk">Drag a section by its handle, or use the arrows. Set each section's width and height.</span><span class="lay-phone">Use the arrows to move a section. Set each section's height.</span></p>
+    <div class="row"><button type="button" class="btn sm" id="layReset">Reset layout</button><button type="button" class="btn sm primary" id="layDone">Done</button></div>
+  </div>
+
+  <!-- Sign in -->
   <section class="win signon" id="winAuth" aria-labelledby="tAuth" hidden>
-    <div class="tbar"><h2 class="ttl" id="tAuth">Sign On</h2></div>
+    <div class="signon-brand"><span class="logo-box big" id="authLogoBox"><img class="logo" id="authLogo" alt="" hidden><span class="mono-logo" id="authMono" aria-hidden="true"></span></span><p class="signon-title" id="authTitle"></p></div>
+    <div class="tbar"><h2 class="ttl" id="tAuth">Sign in</h2></div>
     <form class="wbody" id="authForm" novalidate>
       <label class="fld"><span class="lbl">Name</span><input type="text" id="authName" maxlength="32" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
       <label class="fld"><span class="lbl">Password</span><input type="password" id="authPw" maxlength="128" autocomplete="current-password"></label>
-      <label class="fld" id="authPw2Row" hidden><span class="lbl">Confirm password</span><input type="password" id="authPw2" maxlength="128" autocomplete="new-password"></label>
       <p class="status" id="authStatus" role="status"></p>
-      <div class="row end"><button type="submit" class="btn primary" id="authGo">Sign On</button></div>
+      <div class="row end"><button type="submit" class="btn primary big" id="authGo">Sign in</button></div>
+      <p class="fine">Your coach gives you your name and password.</p>
     </form>
   </section>
 
-  <p class="empty" id="loadingNote">Loading…</p>
+  <p class="empty loading" id="loadingNote">Loading…</p>
+  <section class="win notfound" id="winMissing" hidden>
+    <div class="tbar"><h2 class="ttl">Team not found</h2></div>
+    <div class="wbody"><p id="missingText">There's no team at this address. Check the link your coach sent.</p><p><a class="btn" href="https://getbackpost.com">Go to Backpost</a></p></div>
+  </section>
 
   <!-- Player view -->
   <section id="viewPlayer" class="view" aria-label="My training" hidden>
     <div class="cols">
-      <div class="col">
-        <section class="win" id="winToday" aria-labelledby="tToday">
-          <div class="tbar"><h2 class="ttl" id="tToday">Today</h2><button type="button" class="tmin" aria-label="Minimize Today" aria-expanded="true">_</button></div>
-          <div class="wbody">
-            <p class="big-date" id="todayDate"></p>
-            <div class="checkins" id="checkins">
-              <button type="button" class="ci" data-act="checkin" data-type="ranked"><span class="ci-k">Check in</span><span class="ci-t">Ranked Session</span></button>
-              <button type="button" class="ci" data-act="checkin" data-type="training"><span class="ci-k">Check in</span><span class="ci-t">Training</span></button>
-            </div>
-            <div class="stack" id="activeBox"></div>
-            <div class="stack" id="doneBox"></div>
+      <section class="win" id="winToday" aria-labelledby="tToday">
+        <div class="tbar"><h2 class="ttl" id="tToday">Today</h2><button type="button" class="tmin" aria-label="Minimize Today" aria-expanded="true">_</button></div>
+        <div class="wbody">
+          <p class="big-date" id="todayDate"></p>
+          <div class="checkins" id="checkins">
+            <button type="button" class="ci" data-act="checkin" data-type="ranked"><span class="ci-k">Check in</span><span class="ci-t">Ranked Session</span></button>
+            <button type="button" class="ci alt" data-act="checkin" data-type="training"><span class="ci-k">Check in</span><span class="ci-t">Training</span></button>
           </div>
-        </section>
+          <div class="stack" id="activeBox"></div>
+          <div class="stack" id="doneBox"></div>
+        </div>
+      </section>
 
-        <section class="win" id="winWeek" aria-labelledby="tWeek">
-          <div class="tbar"><h2 class="ttl" id="tWeek">My Week</h2><button type="button" class="tmin" aria-label="Minimize My Week" aria-expanded="true">_</button></div>
-          <div class="wbody">
-            <div class="weeknav">
-              <button type="button" class="btn sm" id="wkPrev" aria-label="Previous week">◀</button>
-              <p class="wk-label" id="wkLabel"></p>
-              <button type="button" class="btn sm" id="wkNext" aria-label="Next week">▶</button>
-              <button type="button" class="btn sm" id="wkThis">Today</button>
-            </div>
-            <div class="reqs" id="reqBox"></div>
-            <p class="verdict" id="verdict"></p>
-            <div class="wlog" id="weekLog"></div>
-            <div class="past-box" id="pastBox"></div>
+      <section class="win" id="winWeek" aria-labelledby="tWeek">
+        <div class="tbar"><h2 class="ttl" id="tWeek">My Week</h2><button type="button" class="tmin" aria-label="Minimize My Week" aria-expanded="true">_</button></div>
+        <div class="wbody">
+          <div class="weeknav">
+            <button type="button" class="btn sm icon" id="wkPrev" aria-label="Previous week">◀</button>
+            <p class="wk-label" id="wkLabel"></p>
+            <button type="button" class="btn sm icon" id="wkNext" aria-label="Next week">▶</button>
+            <button type="button" class="btn sm" id="wkThis">This week</button>
           </div>
-        </section>
-      </div>
+          <div class="reqs" id="reqBox"></div>
+          <p class="verdict" id="verdict"></p>
+          <div class="wlog" id="weekLog"></div>
+          <div class="past-box" id="pastBox"></div>
+        </div>
+      </section>
 
-      <div class="col">
-        <section class="win" id="winRanks" aria-labelledby="tRanks">
-          <div class="tbar"><h2 class="ttl" id="tRanks">Ranks</h2><button type="button" class="tmin" aria-label="Minimize Ranks" aria-expanded="true">_</button></div>
-          <div class="wbody">
-            <ul class="rank-list" id="rankList"></ul>
-            <p class="fine" id="rankUpdated"></p>
-          </div>
-        </section>
+      <section class="win" id="winSched" aria-labelledby="tSched">
+        <div class="tbar"><h2 class="ttl" id="tSched">Schedule</h2><button type="button" class="tmin" aria-label="Minimize Schedule" aria-expanded="true">_</button></div>
+        <div class="wbody"><div class="sched" id="schedList"></div></div>
+      </section>
 
-        <section class="win" id="winBoard" aria-labelledby="tBoard">
-          <div class="tbar"><h2 class="ttl" id="tBoard">Leaderboard · This week</h2><button type="button" class="tmin" aria-label="Minimize Leaderboard" aria-expanded="true">_</button></div>
-          <div class="wbody"><ol class="board" data-board></ol></div>
-        </section>
-      </div>
+      <section class="win" id="winRanks" aria-labelledby="tRanks">
+        <div class="tbar"><h2 class="ttl" id="tRanks">Ranks</h2><button type="button" class="tmin" aria-label="Minimize Ranks" aria-expanded="true">_</button></div>
+        <div class="wbody">
+          <ul class="rank-list" id="rankList"></ul>
+          <p class="fine" id="rankUpdated"></p>
+        </div>
+      </section>
+
+      <section class="win" id="winBoard" aria-labelledby="tBoard">
+        <div class="tbar"><h2 class="ttl" id="tBoard">Leaderboard</h2><button type="button" class="tmin" aria-label="Minimize Leaderboard" aria-expanded="true">_</button></div>
+        <div class="wbody"><p class="fine board-sub">Ranked games this week</p><ol class="board" data-board></ol></div>
+      </section>
     </div>
   </section>
 
   <!-- Coach view -->
   <section id="viewCoach" class="view" aria-label="Coach" hidden>
     <div class="cols">
-      <div class="col">
-        <section class="win" id="winRoster" aria-labelledby="tRoster">
-          <div class="tbar"><h2 class="ttl" id="tRoster">Roster</h2><button type="button" class="tmin" aria-label="Minimize Roster" aria-expanded="true">_</button></div>
-          <div class="wbody">
-            <div class="weeknav">
-              <button type="button" class="btn sm" id="cwPrev" aria-label="Previous week">◀</button>
-              <p class="wk-label" id="cwLabel"></p>
-              <button type="button" class="btn sm" id="cwNext" aria-label="Next week">▶</button>
-              <button type="button" class="btn sm" id="cwThis">Today</button>
-              <button type="button" class="btn sm primary push" id="addOpen">+ Player</button>
-            </div>
-            <form class="sub" id="addForm" novalidate hidden>
-              <div class="add-grid">
-                <label class="fld"><span class="lbl">Name</span><input type="text" id="addName" maxlength="32" autocomplete="off" spellcheck="false"></label>
-                <label class="fld"><span class="lbl">Password</span><span class="pw-row"><input type="text" id="addPw" maxlength="128" autocomplete="off" spellcheck="false"><button type="button" class="btn sm" id="addGen">New</button></span></label>
-                <label class="fld"><span class="lbl">Team</span><select id="addTeam"><option value="varsity">Varsity</option><option value="white">White</option><option value="black">Black</option><option value="casual">Casual</option></select></label>
-                <label class="fld"><span class="lbl">Tracker link</span><input type="url" id="addTracker" placeholder="rocketleague.tracker.network/…" autocomplete="off"></label>
-              </div>
-              <p class="status" id="addStatus" role="status"></p>
-              <div class="row end"><button type="button" class="btn" id="addCancel">Close</button><button type="submit" class="btn primary">Add</button></div>
-            </form>
-            <div class="roster" id="rosterList"></div>
-            <p class="empty" id="rosterEmpty">No players yet.</p>
+      <section class="win" id="winRoster" aria-labelledby="tRoster">
+        <div class="tbar"><h2 class="ttl" id="tRoster">Roster</h2><button type="button" class="tmin" aria-label="Minimize Roster" aria-expanded="true">_</button></div>
+        <div class="wbody">
+          <div class="weeknav">
+            <button type="button" class="btn sm icon" id="cwPrev" aria-label="Previous week">◀</button>
+            <p class="wk-label" id="cwLabel"></p>
+            <button type="button" class="btn sm icon" id="cwNext" aria-label="Next week">▶</button>
+            <button type="button" class="btn sm" id="cwThis">This week</button>
+            <button type="button" class="btn sm primary push" id="addOpen">Add player</button>
           </div>
-        </section>
-
-        <section class="win" id="winReviews" aria-labelledby="tReviews">
-          <div class="tbar"><h2 class="ttl" id="tReviews">Replay reviews</h2><button type="button" class="tmin" aria-label="Minimize Replay reviews" aria-expanded="true">_</button></div>
-          <div class="wbody"><div class="rv-inbox" id="reviewList"></div></div>
-        </section>
-
-        <section class="win" id="winBoardC" aria-labelledby="tBoardC">
-          <div class="tbar"><h2 class="ttl" id="tBoardC">Leaderboard · This week</h2><button type="button" class="tmin" aria-label="Minimize Leaderboard" aria-expanded="true">_</button></div>
-          <div class="wbody"><ol class="board" data-board></ol></div>
-        </section>
-      </div>
-      <div class="col">
-        <section class="win" id="winPlayer" aria-labelledby="tPlayer">
-          <div class="tbar"><h2 class="ttl" id="tPlayer">Player</h2><button type="button" class="tmin" aria-label="Minimize Player" aria-expanded="true">_</button></div>
-          <div class="wbody" id="pdBody"></div>
-        </section>
-
-        <section class="win" id="winSettings" aria-labelledby="tSettings">
-          <div class="tbar"><h2 class="ttl" id="tSettings">Settings</h2><button type="button" class="tmin" aria-label="Minimize Settings" aria-expanded="true">_</button></div>
-          <form class="wbody" id="settingsForm" novalidate>
-            <label class="fld"><span class="lbl">Title</span><input type="text" id="setTitle" maxlength="60"></label>
-            <div class="grp">
-              <h3>Every week, everyone</h3>
-              <div class="set-grid">
-                <label for="setRanked">Ranked Sessions<input type="number" id="setRanked" min="0" max="14" step="1"></label>
-                <label for="setTraining">Training sessions<input type="number" id="setTraining" min="0" max="14" step="1"></label>
-                <label for="setMinGames">Ranked counts at (games)<input type="number" id="setMinGames" min="0" max="60" step="1"></label>
-                <label for="setMinMinutes">Training counts at (min)<input type="number" id="setMinMinutes" min="0" max="300" step="5"></label>
-              </div>
-              <p class="fine">Changes apply from this week on. Past weeks keep theirs.</p>
+          <form class="sub" id="addForm" novalidate hidden>
+            <div class="add-grid">
+              <label class="fld"><span class="lbl">Name</span><input type="text" id="addName" maxlength="32" autocomplete="off" spellcheck="false"></label>
+              <label class="fld"><span class="lbl">Password</span><span class="pw-row"><input type="text" id="addPw" maxlength="128" autocomplete="off" spellcheck="false"><button type="button" class="btn sm" id="addGen">New</button></span></label>
+              <label class="fld"><span class="lbl">Roster</span><select id="addTeam"></select></label>
+              <label class="fld"><span class="lbl">Tracker link</span><input type="url" id="addTracker" placeholder="rocketleague.tracker.network/…" autocomplete="off"></label>
             </div>
-            <div class="grp">
-              <h3>Ranked Session goals</h3>
-              <div class="set-grid" id="goalGrid"></div>
-            </div>
-            <p class="status" id="setStatus" role="status"></p>
-            <div class="row end"><button type="submit" class="btn primary">Save</button></div>
+            <p class="status" id="addStatus" role="status"></p>
+            <div class="row end"><button type="button" class="btn" id="addCancel">Close</button><button type="submit" class="btn primary">Add</button></div>
           </form>
-        </section>
-      </div>
+          <div class="roster" id="rosterList"></div>
+          <p class="empty" id="rosterEmpty">No players yet. Add your first player above.</p>
+        </div>
+      </section>
+
+      <section class="win" id="winSchedC" aria-labelledby="tSchedC">
+        <div class="tbar"><h2 class="ttl" id="tSchedC">Schedule</h2><button type="button" class="tmin" aria-label="Minimize Schedule" aria-expanded="true">_</button></div>
+        <div class="wbody">
+          <div class="row"><button type="button" class="btn sm primary" id="evNew">Add event</button></div>
+          <div id="evFormBox"></div>
+          <div class="sched" id="schedListC"></div>
+        </div>
+      </section>
+
+      <section class="win" id="winReviews" aria-labelledby="tReviews">
+        <div class="tbar"><h2 class="ttl" id="tReviews">Replay reviews</h2><button type="button" class="tmin" aria-label="Minimize Replay reviews" aria-expanded="true">_</button></div>
+        <div class="wbody"><div class="rv-inbox" id="reviewList"></div></div>
+      </section>
+
+      <section class="win" id="winBoardC" aria-labelledby="tBoardC">
+        <div class="tbar"><h2 class="ttl" id="tBoardC">Leaderboard</h2><button type="button" class="tmin" aria-label="Minimize Leaderboard" aria-expanded="true">_</button></div>
+        <div class="wbody"><p class="fine board-sub">Ranked games this week</p><ol class="board" data-board></ol></div>
+      </section>
+
+      <section class="win" id="winPlayer" aria-labelledby="tPlayer">
+        <div class="tbar"><h2 class="ttl" id="tPlayer">Player</h2><button type="button" class="tmin" aria-label="Minimize Player" aria-expanded="true">_</button></div>
+        <div class="wbody" id="pdBody"></div>
+      </section>
+
+      <section class="win" id="winSettings" aria-labelledby="tSettings">
+        <div class="tbar"><h2 class="ttl" id="tSettings">Settings</h2><button type="button" class="tmin" aria-label="Minimize Settings" aria-expanded="true">_</button></div>
+        <form class="wbody" id="settingsForm" novalidate>
+          <div class="seg" role="tablist" aria-label="Settings">
+            <button type="button" role="tab" class="seg-b" data-tab="team" aria-selected="true">Team</button>
+            <button type="button" role="tab" class="seg-b" data-tab="look" aria-selected="false">Look</button>
+            <button type="button" role="tab" class="seg-b" data-tab="rosters" aria-selected="false">Rosters</button>
+            <button type="button" role="tab" class="seg-b" data-tab="week" aria-selected="false">Requirements</button>
+          </div>
+
+          <div class="tabp" data-panel="team" role="tabpanel">
+            <label class="fld"><span class="lbl">Team name</span><input type="text" id="setTitle" maxlength="60"></label>
+            <label class="fld"><span class="lbl">Time zone</span><select id="setTz"></select><span class="fine">Used for schedule times in notifications.</span></label>
+            <fieldset class="grp"><legend>Sections</legend>
+              <div class="checks" id="featBox">
+                <label class="chk"><input type="checkbox" data-feat="schedule"> Schedule</label>
+                <label class="chk"><input type="checkbox" data-feat="reviews"> Replay reviews</label>
+                <label class="chk"><input type="checkbox" data-feat="ranks"> Ranks</label>
+                <label class="chk"><input type="checkbox" data-feat="board"> Leaderboard</label>
+              </div>
+              <p class="fine">Turned-off sections disappear for everyone on your team.</p>
+            </fieldset>
+            <fieldset class="grp"><legend>Who sees the schedule</legend>
+              <div class="checks" id="schedRosterBox"></div>
+            </fieldset>
+          </div>
+
+          <div class="tabp" data-panel="look" role="tabpanel" hidden>
+            <div class="logo-edit">
+              <span class="logo-box big" id="setLogoBox"><img class="logo" id="setLogoImg" alt="" hidden><span class="mono-logo" id="setMono" aria-hidden="true"></span></span>
+              <div class="stack">
+                <label class="btn sm" for="setLogoFile">Upload logo</label>
+                <input type="file" id="setLogoFile" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="sr">
+                <button type="button" class="linkbtn" id="setLogoRm" hidden>Remove logo</button>
+              </div>
+            </div>
+            <p class="fine">PNG with a clear background works best. It's also used for your team's app icon.</p>
+            <label class="fld"><span class="lbl">App icon background</span><select id="setIconBg"><option value="primary">Main color</option><option value="white">White</option></select></label>
+            <div class="add-grid">
+              <label class="fld"><span class="lbl">Main color</span><span class="color-row"><input type="color" id="setPrimary"><input type="text" id="setPrimaryHex" maxlength="7" spellcheck="false" aria-label="Main color hex"></span></label>
+              <label class="fld"><span class="lbl">Second color</span><span class="color-row"><input type="color" id="setSecondary"><input type="text" id="setSecondaryHex" maxlength="7" spellcheck="false" aria-label="Second color hex"></span><label class="chk"><input type="checkbox" id="setNoSecondary"> No second color</label></label>
+            </div>
+            <fieldset class="grp"><legend>Background</legend>
+              <div class="swatches" id="paperBox">
+                <label class="sw"><input type="radio" name="paper" value="clean"><span class="sw-chip" style="background:#f3f5f8"></span>Cool gray</label>
+                <label class="sw"><input type="radio" name="paper" value="white"><span class="sw-chip" style="background:#ffffff"></span>White</label>
+                <label class="sw"><input type="radio" name="paper" value="cream"><span class="sw-chip" style="background:#f5f1e7"></span>Cream</label>
+              </div>
+            </fieldset>
+            <fieldset class="grp"><legend>Lettering</legend>
+              <div class="swatches fonts" id="fontsBox">
+                <label class="sw"><input type="radio" name="fonts" value="arena"><span class="sw-type f-arena">Arena</span></label>
+                <label class="sw"><input type="radio" name="fonts" value="classic"><span class="sw-type f-classic">Classic</span></label>
+                <label class="sw"><input type="radio" name="fonts" value="block"><span class="sw-type f-block">Block</span></label>
+              </div>
+            </fieldset>
+            <div class="add-grid">
+              <fieldset class="grp"><legend>Corners</legend>
+                <div class="checks"><label class="chk"><input type="radio" name="shape" value="angled"> Angled</label><label class="chk"><input type="radio" name="shape" value="rounded"> Rounded</label></div>
+              </fieldset>
+              <fieldset class="grp"><legend>Header</legend>
+                <div class="checks"><label class="chk"><input type="radio" name="header" value="color"> Main color</label><label class="chk"><input type="radio" name="header" value="light"> Light</label></div>
+              </fieldset>
+            </div>
+            <p class="fine" id="lookNote">You're seeing a preview. Save to keep it.</p>
+          </div>
+
+          <div class="tabp" data-panel="rosters" role="tabpanel" hidden>
+            <p class="fine">Players belong to one roster. Rosters marked "No set sessions" have no weekly requirement.</p>
+            <div class="rost-ed" id="rosterEd"></div>
+            <div class="row"><button type="button" class="btn sm" id="rosterAdd">Add roster</button></div>
+          </div>
+
+          <div class="tabp" data-panel="week" role="tabpanel" hidden>
+            <div class="set-grid">
+              <label for="setRanked">Ranked Sessions<input type="number" id="setRanked" min="0" max="14" step="1"></label>
+              <label for="setTraining">Training sessions<input type="number" id="setTraining" min="0" max="14" step="1"></label>
+              <label for="setMinGames">Ranked counts at (games)<input type="number" id="setMinGames" min="0" max="60" step="1"></label>
+              <label for="setMinMinutes">Training counts at (min)<input type="number" id="setMinMinutes" min="0" max="300" step="5"></label>
+            </div>
+            <p class="fine">Changes apply from this week on. Past weeks keep theirs.</p>
+            <fieldset class="grp"><legend>Ranked Session goals</legend>
+              <div class="set-grid" id="goalGrid"></div>
+            </fieldset>
+          </div>
+
+          <p class="status" id="setStatus" role="status"></p>
+          <div class="row end"><button type="button" class="btn" id="setRevert" hidden>Undo changes</button><button type="submit" class="btn primary">Save</button></div>
+        </form>
+      </section>
     </div>
   </section>
 
@@ -183,7 +285,7 @@
       <label class="fld"><span class="lbl">Current password</span><input type="password" id="pwCur" autocomplete="current-password" maxlength="128"></label>
       <label class="fld"><span class="lbl">New password</span><input type="password" id="pwNew" autocomplete="new-password" maxlength="128"></label>
       <p class="status" id="pwStatus" role="status"></p>
-      <div class="row spread"><button type="button" class="btn" id="signOff">Sign off</button><button type="submit" class="btn primary">Change password</button></div>
+      <div class="row spread"><button type="button" class="btn" id="signOff">Sign out</button><button type="submit" class="btn primary">Change password</button></div>
     </form>
     <div class="wbody app-box" id="appBox">
       <div class="grp">
@@ -200,7 +302,156 @@
     </div>
   </section>
 </main>
+<footer class="powered"><a href="https://getbackpost.com" id="poweredLink">Powered by <img src="/bp/mark.png" alt="" width="31" height="26"> <span>Backpost</span></a></footer>
+</div>
+
+<!-- ============ getbackpost.com ============ -->
+<div id="landing" class="site" hidden>
+  <header class="site-head">
+    <a href="/" class="site-mark" aria-label="Backpost home"><img src="/bp/wordmark-sm.png" alt="Backpost" width="224" height="40"></a>
+    <nav class="site-nav" aria-label="Backpost"><a href="#how">How it works</a><a href="#request" class="btn sm primary">Request access</a></nav>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <h1>Run your esports program like a varsity team.</h1>
+        <p class="lede">Players check in, log every ranked game and reflect after each session. Coaches see the whole roster at a glance, schedule scrims and matches, and answer replay review requests. Free for schools.</p>
+        <div class="row"><a href="#request" class="btn primary big">Request access</a><a href="#how" class="btn big">How it works</a></div>
+      </div>
+      <div class="hero-demo" aria-label="A live Ranked Session on Backpost">
+        <div class="demo-card">
+          <div class="scorebug"><span class="sb-live">Live</span><span class="sb-type">Ranked Session</span><span class="sb-time" id="demoClock">0:37:11</span></div>
+          <div class="demo-body">
+            <div class="demo-row"><span class="demo-pl">2v2 Doubles</span><span class="demo-n" id="demoN">9</span><span class="demo-wl"><b id="demoW">6W</b> <span id="demoL">3L</span></span><span class="demo-btns"><button type="button" class="btn sm" data-demo="l">Loss</button><button type="button" class="btn sm primary" data-demo="w">Win</button></span></div>
+            <div class="demo-segs" id="demoSegs" aria-hidden="true"></div>
+            <p class="demo-hint">Counts toward the week</p>
+          </div>
+        </div>
+        <div class="demo-week">
+          <div class="dw"><span>Ranked Sessions</span><b>2 / 3</b></div>
+          <div class="dw met"><span>Training</span><b>2 / 2</b></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band-sec" id="how">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li><h3>We set up your team</h3><p>Your team gets its own address, like getbackpost.com/yourschool, with your colors and logo.</p></li>
+        <li><h3>You add your roster</h3><p>Create a login for each player and put them on a roster: Varsity, JV, or anything you call them.</p></li>
+        <li><h3>Players log their week</h3><p>They check in for Ranked Sessions and Training, track wins and losses, and write what to work on next.</p></li>
+        <li><h3>You coach from one screen</h3><p>See who's done, who's in session, and who's behind. Leave notes, review replays, and post the week's scrims.</p></li>
+      </ol>
+    </section>
+
+    <section class="band-sec feats">
+      <div class="feat"><h3>Weekly requirements</h3><p>Set how many Ranked Sessions and Training sessions count each week, per roster or per player. Past weeks keep their numbers.</p></div>
+      <div class="feat"><h3>Scrims, matches and film</h3><p>One schedule for the whole program. Each event goes to the rosters it's for, and players mark if they're in.</p></div>
+      <div class="feat"><h3>Replay reviews</h3><p>Players flag the game they want looked at, right from the session. Coaches get a notification and a queue.</p></div>
+      <div class="feat"><h3>Ranks and trends</h3><p>Every player's rank and MMR with an eight-week trend, so progress is something you can point to.</p></div>
+    </section>
+
+    <section class="band-sec free">
+      <div class="free-in">
+        <h2>Free for schools</h2>
+        <p>Backpost is free for college, high school and club esports programs. It installs on phones like an app and sends notifications.</p>
+      </div>
+    </section>
+
+    <section class="band-sec" id="request">
+      <h2>Request access</h2>
+      <p class="fine">Tell us about your program and we'll set up your team.</p>
+      <form class="req-form" id="reqForm" novalidate>
+        <div class="add-grid">
+          <label class="fld"><span class="lbl">School or team</span><input type="text" name="school" maxlength="80" autocomplete="organization"></label>
+          <label class="fld"><span class="lbl">Your name</span><input type="text" name="name" maxlength="60" autocomplete="name"></label>
+          <label class="fld"><span class="lbl">Email</span><input type="email" name="email" maxlength="120" autocomplete="email"></label>
+          <label class="fld"><span class="lbl">Your role</span><select name="role"><option value="Coach">Coach</option><option value="Program director">Program director</option><option value="Player">Player</option><option value="Other">Other</option></select></label>
+        </div>
+        <label class="fld"><span class="lbl">Anything else? (optional)</span><textarea name="message" rows="3" maxlength="1000"></textarea></label>
+        <label class="hp" aria-hidden="true">Website<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+        <p class="status" id="reqStatus" role="status"></p>
+        <div class="row"><button type="submit" class="btn primary big">Send request</button></div>
+      </form>
+    </section>
+  </main>
+  <footer class="site-foot"><img src="/bp/mark.png" alt="" width="31" height="26"><span>Backpost</span><span class="fine">Training, scrims and film for esports programs.</span></footer>
+</div>
+
+<!-- ============ Admin ============ -->
+<div id="adminApp" class="site admin" hidden>
+  <header class="site-head">
+    <a href="/" class="site-mark"><img src="/bp/wordmark-sm.png" alt="Backpost" width="224" height="40"></a>
+    <nav class="site-nav"><span class="fine" id="adminWho"></span><button type="button" class="btn sm" id="adminOut" hidden>Sign out</button></nav>
+  </header>
+  <main class="admin-main">
+    <section class="win" id="adminAuth" hidden>
+      <div class="tbar"><h2 class="ttl" id="adminAuthT">Admin sign in</h2></div>
+      <form class="wbody" id="adminAuthForm" novalidate>
+        <label class="fld"><span class="lbl">Name</span><input type="text" id="adName" maxlength="32" autocomplete="username"></label>
+        <label class="fld"><span class="lbl">Password</span><input type="password" id="adPw" maxlength="128" autocomplete="current-password"></label>
+        <label class="fld" id="adPw2Row" hidden><span class="lbl">Confirm password</span><input type="password" id="adPw2" maxlength="128" autocomplete="new-password"></label>
+        <p class="status" id="adStatus" role="status"></p>
+        <div class="row end"><button type="submit" class="btn primary" id="adGo">Sign in</button></div>
+      </form>
+    </section>
+    <div id="adminBody" hidden>
+      <section class="win">
+        <div class="tbar"><h2 class="ttl">Schools</h2></div>
+        <div class="wbody">
+          <div class="row"><button type="button" class="btn sm primary" id="schoolNewOpen">New school</button></div>
+          <form class="sub" id="schoolForm" novalidate hidden>
+            <div class="add-grid">
+              <label class="fld"><span class="lbl">School or team name</span><input type="text" id="snName" maxlength="60"></label>
+              <label class="fld"><span class="lbl">Web address</span><span class="addr-row"><span class="fine">getbackpost.com/</span><input type="text" id="snSlug" maxlength="32" spellcheck="false" autocapitalize="off"></span></label>
+              <label class="fld"><span class="lbl">Main color</span><span class="color-row"><input type="color" id="snPrimary" value="#4289d1"></span></label>
+              <label class="fld"><span class="lbl">Second color</span><span class="color-row"><input type="color" id="snSecondary" value="#ed8727"></span></label>
+            </div>
+            <p class="status" id="snStatus" role="status"></p>
+            <div class="row end"><button type="button" class="btn" id="snCancel">Cancel</button><button type="submit" class="btn primary">Create school</button></div>
+          </form>
+          <div class="school-list" id="schoolList"></div>
+        </div>
+      </section>
+      <section class="win">
+        <div class="tbar"><h2 class="ttl">Access requests</h2></div>
+        <div class="wbody"><div id="requestList"></div></div>
+      </section>
+      <section class="win">
+        <div class="tbar"><h2 class="ttl">Admin account</h2></div>
+        <form class="wbody" id="adPwForm" novalidate>
+          <div class="add-grid">
+            <label class="fld"><span class="lbl">Current password</span><input type="password" id="adCur" autocomplete="current-password" maxlength="128"></label>
+            <label class="fld"><span class="lbl">New password</span><input type="password" id="adNew" autocomplete="new-password" maxlength="128"></label>
+          </div>
+          <p class="status" id="adPwStatus" role="status"></p>
+          <div class="row end"><button type="submit" class="btn primary">Change password</button></div>
+        </form>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ============ Coach invite ============ -->
+<div id="joinApp" class="shell join" hidden>
+  <main class="desk">
+    <section class="win signon" id="joinWin">
+      <div class="signon-brand"><span class="logo-box big" id="joinLogoBox"><img class="logo" id="joinLogo" alt="" hidden><span class="mono-logo" id="joinMono" aria-hidden="true"></span></span><p class="signon-title" id="joinTitle"></p></div>
+      <div class="tbar"><h2 class="ttl" id="joinT">Coach account</h2></div>
+      <form class="wbody" id="joinForm" novalidate>
+        <p id="joinLead">Set up your coach account. You'll use this name and password to sign in.</p>
+        <label class="fld"><span class="lbl">Your name</span><input type="text" id="jName" maxlength="32" autocomplete="username"></label>
+        <label class="fld"><span class="lbl">Password</span><input type="password" id="jPw" maxlength="128" autocomplete="new-password"></label>
+        <label class="fld"><span class="lbl">Confirm password</span><input type="password" id="jPw2" maxlength="128" autocomplete="new-password"></label>
+        <p class="status" id="jStatus" role="status"></p>
+        <div class="row end"><button type="submit" class="btn primary big" id="jGo">Create account</button></div>
+      </form>
+    </section>
+  </main>
+  <footer class="powered"><a href="https://getbackpost.com">Powered by <img src="/bp/mark.png" alt="" width="31" height="26"> <span>Backpost</span></a></footer>
+</div>
 
 <script src="/app.js" defer></script>
+<script src="/site.js" defer></script>
 </body>
 </html>

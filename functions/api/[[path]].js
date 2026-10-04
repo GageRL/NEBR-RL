@@ -865,6 +865,8 @@ async function route(ctx, segs) {
 
   if (!user) fail(401, "Signed out. Sign in again.");
   const st = await getSettings(db, school);
+  // Notifications carry the school's own app icon.
+  const notifyS = (ids, msg) => notify(db, ids, Object.assign({ icon: st.icon || "" }, msg));
 
   /* ----- signed-in member ----- */
   if (key === "GET me") return json({ me: pub(user) });
@@ -911,7 +913,7 @@ async function route(ctx, segs) {
     return json({ ok: true });
   }
   if (key === "POST push/test") {
-    const r = await notify(db, [user.id], { title: "Notifications are on", body: "You'll get updates from " + st.title + " here.", url: school.base, tag: "test" });
+    const r = await notifyS([user.id], { title: "Notifications are on", body: "You'll get updates from " + st.title + " here.", url: school.base, tag: "test" });
     return json(r);
   }
   /* Replay review requests: a player asks the coach to look at a Ranked Session. */
@@ -934,7 +936,7 @@ async function route(ctx, segs) {
     if (open && open.n >= 20) fail(429, "You have 20 requests waiting. Wait for Coach to get to some first.");
     const id = newId(), now = Date.now();
     await db.prepare("INSERT INTO reviews (id, school_id, user_id, week, session_id, playlist, link, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)").bind(id, school.id, user.id, wk, sid, playlist, link, note, now).run();
-    later(coachIds(db, school, user.id).then(ids => notify(db, ids, { title: "Replay review request", body: user.username + ": " + clip(note, 140), url: goUrl(school, "go=reviews"), tag: "rv-" + id })));
+    later(coachIds(db, school, user.id).then(ids => notifyS(ids, { title: "Replay review request", body: user.username + ": " + clip(note, 140), url: goUrl(school, "go=reviews"), tag: "rv-" + id })));
     return json({ review: pubReview({ id, user_id: user.id, week: wk, session_id: sid, playlist, link, note, status: "open", created_at: now }) });
   }
   if (method === "DELETE" && a === "reviews" && b && !c) {
@@ -1040,7 +1042,7 @@ async function route(ctx, segs) {
         const before = s.coachNote || "";
         if (note) { s.coachNote = note; s.coachNoteAt = new Date().toISOString(); } else { delete s.coachNote; delete s.coachNoteAt; }
         await writeWeek(c, wk, d).run();
-        if (note && note !== before && c !== user.id) later(notify(db, [c], { title: "Coach left a note", body: clip(note, 160), url: goUrl(school, "go=week&wk=" + wk), tag: "note-" + sid }));
+        if (note && note !== before && c !== user.id) later(notifyS([c], { title: "Coach left a note", body: clip(note, 160), url: goUrl(school, "go=week&wk=" + wk), tag: "note-" + sid }));
         return json({ ok: true, note });
       }
       if (segs[3] === "sessions" && segs[5] && !segs[6] && method === "PUT") {
@@ -1128,6 +1130,8 @@ async function route(ctx, segs) {
       if (keys.some(k => s.targets[k] !== st.targets[k])) {
         s.targetsLog = logPut(st.targetsLog, Object.assign({ from: weekFrom(body.from) }, s.targets), Object.assign({ from: LOG_START }, st.targets));
       }
+      // New rosters see the schedule unless they have no set sessions.
+      for (const r of s.rosters) if (!st.rosters.some(x => x.id === r.id) && !r.casual && !s.schedRosters.includes(r.id)) s.schedRosters.push(r.id);
       // A roster can only be removed once nobody is on it.
       const gone = st.rosters.filter(r => !s.rosters.some(x => x.id === r.id));
       if (gone.length) {
@@ -1172,7 +1176,7 @@ async function route(ctx, segs) {
       const e = normEvent(body, st), id = newId(), now = Date.now();
       await db.prepare("INSERT INTO events (id, school_id, kind, opponent, starts_at, format, details, link, teams, result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(id, school.id, e.kind, e.opponent, e.startsAt, packFormat(e), e.details, e.link, JSON.stringify(e.teams), e.result, now, now).run();
-      if (e.startsAt > now) later(eventAudience(db, school, st, e.teams).then(ids => notify(db, ids, { title: "New: " + eventTitle(e), body: fmtWhen(e.startsAt, st.tz) + (e.format ? ", " + e.format : ""), url: goUrl(school, "go=schedule"), tag: "ev-" + id })));
+      if (e.startsAt > now) later(eventAudience(db, school, st, e.teams).then(ids => notifyS(ids, { title: "New: " + eventTitle(e), body: fmtWhen(e.startsAt, st.tz) + (e.format ? ", " + e.format : ""), url: goUrl(school, "go=schedule"), tag: "ev-" + id })));
       const row = await db.prepare("SELECT * FROM events WHERE id = ?").bind(id).first();
       return json({ event: pubEvent(row, [], null) });
     }
@@ -1183,7 +1187,7 @@ async function route(ctx, segs) {
       await db.prepare("UPDATE events SET kind = ?, opponent = ?, starts_at = ?, format = ?, details = ?, link = ?, teams = ?, result = ?, updated_at = ? WHERE id = ? AND school_id = ?")
         .bind(e.kind, e.opponent, e.startsAt, packFormat(e), e.details, e.link, JSON.stringify(e.teams), e.result, Date.now(), c, school.id).run();
       // Only a new time is worth a notification (and only for events still ahead).
-      if (e.startsAt !== prev.starts_at && e.startsAt > Date.now()) later(eventAudience(db, school, st, e.teams).then(ids => notify(db, ids, { title: "Moved: " + eventTitle(e), body: "Now " + fmtWhen(e.startsAt, st.tz), url: goUrl(school, "go=schedule"), tag: "ev-" + c })));
+      if (e.startsAt !== prev.starts_at && e.startsAt > Date.now()) later(eventAudience(db, school, st, e.teams).then(ids => notifyS(ids, { title: "Moved: " + eventTitle(e), body: "Now " + fmtWhen(e.startsAt, st.tz), url: goUrl(school, "go=schedule"), tag: "ev-" + c })));
       const row = await db.prepare("SELECT * FROM events WHERE id = ?").bind(c).first();
       return json({ event: (await eventsWithRsvps(db, [row], null))[0] });
     }
@@ -1191,7 +1195,7 @@ async function route(ctx, segs) {
       const prev = await db.prepare("SELECT * FROM events WHERE id = ? AND school_id = ?").bind(c, school.id).first();
       if (!prev) return json({ ok: true });
       await db.batch([db.prepare("DELETE FROM rsvps WHERE event_id = ?").bind(c), db.prepare("DELETE FROM events WHERE id = ? AND school_id = ?").bind(c, school.id)]);
-      if (prev.starts_at > Date.now()) later(eventAudience(db, school, st, parse(prev.teams, [])).then(ids => notify(db, ids, { title: "Canceled: " + eventTitle(prev), body: "Was " + fmtWhen(prev.starts_at, st.tz), url: goUrl(school, "go=schedule"), tag: "ev-" + c })));
+      if (prev.starts_at > Date.now()) later(eventAudience(db, school, st, parse(prev.teams, [])).then(ids => notifyS(ids, { title: "Canceled: " + eventTitle(prev), body: "Was " + fmtWhen(prev.starts_at, st.tz), url: goUrl(school, "go=schedule"), tag: "ev-" + c })));
       return json({ ok: true });
     }
     if (key === "GET coach/reviews") {
@@ -1205,7 +1209,7 @@ async function route(ctx, segs) {
       await db.prepare("UPDATE reviews SET status = ?, done_at = ? WHERE id = ? AND school_id = ?").bind(status, status === "done" ? Date.now() : null, c, school.id).run();
       if (prev.status !== "done" && status === "done" && prev.user_id !== user.id) {
         const pl = { duel: "1v1 Duel", doubles: "2v2 Doubles", standard: "3v3 Standard" }[prev.playlist];
-        later(notify(db, [prev.user_id], { title: "Replay reviewed", body: "Coach went over your " + (pl ? pl + " " : "") + "replay.", url: goUrl(school, "go=week"), tag: "rvd-" + c }));
+        later(notifyS([prev.user_id], { title: "Replay reviewed", body: "Coach went over your " + (pl ? pl + " " : "") + "replay.", url: goUrl(school, "go=week"), tag: "rvd-" + c }));
       }
       return json({ ok: true, status });
     }
