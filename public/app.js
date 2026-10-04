@@ -29,7 +29,7 @@
     training: { notes: "What I did", q: [["well", "What clicked"], ["cost", "Still struggling with"], ["next", "Next session focus"]] }
   };
   const reflFor = t => REFL_BY_TYPE[t] || REFL_BY_TYPE.ranked;
-  const TEAMS = [["varsity", "Varsity"], ["white", "White"], ["black", "Black"]];
+  const TEAMS = [["varsity", "Varsity"], ["white", "White"], ["black", "Black"], ["casual", "Casual"]];
   const teamName = t => { const x = TEAMS.find(p => p[0] === t); return x ? x[1] : ""; };
 
   /* ---------- Helpers ---------- */
