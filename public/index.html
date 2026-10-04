@@ -31,13 +31,13 @@
 <main class="desk">
   <!-- Sign on / first-time setup -->
   <section class="win signon" id="winAuth" aria-labelledby="tAuth" hidden>
-    <div class="tbar"><h2 class="ttl" id="tAuth">Sign On</h2></div>
+    <div class="tbar"><h2 class="ttl" id="tAuth">Sign in</h2></div>
     <form class="wbody" id="authForm" novalidate>
       <label class="fld"><span class="lbl">Name</span><input type="text" id="authName" maxlength="32" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
       <label class="fld"><span class="lbl">Password</span><input type="password" id="authPw" maxlength="128" autocomplete="current-password"></label>
       <label class="fld" id="authPw2Row" hidden><span class="lbl">Confirm password</span><input type="password" id="authPw2" maxlength="128" autocomplete="new-password"></label>
       <p class="status" id="authStatus" role="status"></p>
-      <div class="row end"><button type="submit" class="btn primary" id="authGo">Sign On</button></div>
+      <div class="row end"><button type="submit" class="btn primary" id="authGo">Sign in</button></div>
     </form>
   </section>
 
@@ -48,7 +48,7 @@
     <div class="cols">
       <div class="col">
         <section class="win" id="winToday" aria-labelledby="tToday">
-          <div class="tbar"><h2 class="ttl" id="tToday">Today</h2><button type="button" class="tmin" aria-label="Minimize Today" aria-expanded="true">_</button></div>
+          <div class="tbar"><h2 class="ttl" id="tToday">Today</h2></div>
           <div class="wbody">
             <p class="big-date" id="todayDate"></p>
             <div class="checkins" id="checkins">
@@ -61,7 +61,7 @@
         </section>
 
         <section class="win" id="winWeek" aria-labelledby="tWeek">
-          <div class="tbar"><h2 class="ttl" id="tWeek">My Week</h2><button type="button" class="tmin" aria-label="Minimize My Week" aria-expanded="true">_</button></div>
+          <div class="tbar"><h2 class="ttl" id="tWeek">My Week</h2></div>
           <div class="wbody">
             <div class="weeknav">
               <button type="button" class="btn sm" id="wkPrev" aria-label="Previous week">◀</button>
@@ -78,7 +78,7 @@
 
       <div class="col">
         <section class="win" id="winRanks" aria-labelledby="tRanks">
-          <div class="tbar"><h2 class="ttl" id="tRanks">Ranks</h2><button type="button" class="tmin" aria-label="Minimize Ranks" aria-expanded="true">_</button></div>
+          <div class="tbar"><h2 class="ttl" id="tRanks">Ranks</h2></div>
           <div class="wbody">
             <ul class="rank-list" id="rankList"></ul>
             <p class="fine" id="rankUpdated"></p>
@@ -86,8 +86,8 @@
         </section>
 
         <section class="win" id="winBoard" aria-labelledby="tBoard">
-          <div class="tbar"><h2 class="ttl" id="tBoard">Leaderboard · This week</h2><button type="button" class="tmin" aria-label="Minimize Leaderboard" aria-expanded="true">_</button></div>
-          <div class="wbody"><ol class="board" data-board></ol></div>
+          <div class="tbar"><h2 class="ttl" id="tBoard">Leaderboard</h2></div>
+          <div class="wbody"><p class="board-head"><span>Player</span><span>Ranked games this week</span></p><ol class="board" data-board></ol></div>
         </section>
       </div>
     </div>
@@ -98,14 +98,14 @@
     <div class="cols">
       <div class="col">
         <section class="win" id="winRoster" aria-labelledby="tRoster">
-          <div class="tbar"><h2 class="ttl" id="tRoster">Roster</h2><button type="button" class="tmin" aria-label="Minimize Roster" aria-expanded="true">_</button></div>
+          <div class="tbar"><h2 class="ttl" id="tRoster">Roster</h2></div>
           <div class="wbody">
             <div class="weeknav">
               <button type="button" class="btn sm" id="cwPrev" aria-label="Previous week">◀</button>
               <p class="wk-label" id="cwLabel"></p>
               <button type="button" class="btn sm" id="cwNext" aria-label="Next week">▶</button>
               <button type="button" class="btn sm" id="cwThis">Today</button>
-              <button type="button" class="btn sm primary push" id="addOpen">+ Player</button>
+              <button type="button" class="btn sm primary push" id="addOpen">Add player</button>
             </div>
             <form class="sub" id="addForm" novalidate hidden>
               <div class="add-grid">
@@ -123,18 +123,18 @@
         </section>
 
         <section class="win" id="winBoardC" aria-labelledby="tBoardC">
-          <div class="tbar"><h2 class="ttl" id="tBoardC">Leaderboard · This week</h2><button type="button" class="tmin" aria-label="Minimize Leaderboard" aria-expanded="true">_</button></div>
-          <div class="wbody"><ol class="board" data-board></ol></div>
+          <div class="tbar"><h2 class="ttl" id="tBoardC">Leaderboard</h2></div>
+          <div class="wbody"><p class="board-head"><span>Player</span><span>Ranked games this week</span></p><ol class="board" data-board></ol></div>
         </section>
       </div>
       <div class="col">
         <section class="win" id="winPlayer" aria-labelledby="tPlayer">
-          <div class="tbar"><h2 class="ttl" id="tPlayer">Player</h2><button type="button" class="tmin" aria-label="Minimize Player" aria-expanded="true">_</button></div>
+          <div class="tbar"><h2 class="ttl" id="tPlayer">Player</h2></div>
           <div class="wbody" id="pdBody"></div>
         </section>
 
         <section class="win" id="winSettings" aria-labelledby="tSettings">
-          <div class="tbar"><h2 class="ttl" id="tSettings">Settings</h2><button type="button" class="tmin" aria-label="Minimize Settings" aria-expanded="true">_</button></div>
+          <div class="tbar"><h2 class="ttl" id="tSettings">Settings</h2></div>
           <form class="wbody" id="settingsForm" novalidate>
             <label class="fld"><span class="lbl">Title</span><input type="text" id="setTitle" maxlength="60"></label>
             <div class="grp">
@@ -166,7 +166,7 @@
       <label class="fld"><span class="lbl">Current password</span><input type="password" id="pwCur" autocomplete="current-password" maxlength="128"></label>
       <label class="fld"><span class="lbl">New password</span><input type="password" id="pwNew" autocomplete="new-password" maxlength="128"></label>
       <p class="status" id="pwStatus" role="status"></p>
-      <div class="row spread"><button type="button" class="btn" id="signOff">Sign off</button><button type="submit" class="btn primary">Change password</button></div>
+      <div class="row spread"><button type="button" class="btn" id="signOff">Sign out</button><button type="submit" class="btn primary">Change password</button></div>
     </form>
   </section>
 </main>

@@ -311,10 +311,10 @@
   /* ---------- Auth ---------- */
   function renderAuth() {
     const setup = S.needsSetup;
-    $("#tAuth").textContent = setup ? "Create Coach Account" : "Sign On";
+    $("#tAuth").textContent = setup ? "Create coach account" : "Sign in";
     $("#authPw2Row").hidden = !setup;
     $("#authPw").autocomplete = setup ? "new-password" : "current-password";
-    $("#authGo").textContent = setup ? "Create" : "Sign On";
+    $("#authGo").textContent = setup ? "Create" : "Sign in";
   }
   $("#authForm").addEventListener("submit", async e => {
     e.preventDefault();
@@ -339,13 +339,15 @@
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
     S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.needsSetup = false;
-    setStatus($("#authStatus"), "Signed out. Sign on again.", "err");
+    setStatus($("#authStatus"), "Signed out. Sign in again.", "err");
     renderAll();
   }
   function openAccount() {
     const w = $("#winAccount");
     w.hidden = false;
-    $("#accName").textContent = S.me.name + (S.me.team ? " · " + teamName(S.me.team) : "");
+    const an = $("#accName");
+    an.textContent = S.me.name;
+    if (S.me.team) an.append(mk("span", "acc-team", teamName(S.me.team)));
     setStatus($("#pwStatus"), "");
     w.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
   }
@@ -464,7 +466,7 @@
     const have = isRanked ? (s ? gamesIn(s) : 0) : elapsedMin(a.startedAt), need = isRanked ? T.minGames : T.minMinutes;
     hint.hidden = need <= 0;
     hint.classList.toggle("ok", have >= need);
-    hint.textContent = have >= need ? "\u2713 Counts toward the week" : isRanked ? "Counts at " + need + " games \u00b7 " + have + " so far" : "Counts after " + need + " min";
+    hint.textContent = have >= need ? "\u2713 Counts toward the week" : isRanked ? have + " of " + need + " games to count toward the week" : "Counts toward the week after " + need + " min";
     const rf = reflFor(a.type);
     c.querySelector(".lbl-did").textContent = rf.notes;
     for (const [k, l] of rf.q) c.querySelector('.rq[data-k="' + k + '"]').textContent = l;
@@ -496,24 +498,25 @@
     if (s.coachNote) { add("Coach", s.coachNote); box.lastChild.classList.add("cn"); }
     box.hidden = !box.children.length;
   }
-  function sessionSummary(s) {
+  // Box-score pieces of a session ("2s 9–5", "Warmup", focus areas), each shown as its own item.
+  function sessionParts(s) {
     const bits = [];
-    if (s.type === "ranked") {
-      const g = PL.filter(p => s.games[p.key].w + s.games[p.key].l > 0).map(p => p.short + " " + (s.games[p.key].w + s.games[p.key].l) + " (" + s.games[p.key].w + "–" + s.games[p.key].l + ")");
-      if (g.length) bits.push(g.join(" · "));
-    }
+    if (s.type === "ranked") for (const p of PL) { const g = s.games[p.key]; if (g.w + g.l > 0) bits.push(p.short + " " + g.w + "\u2013" + g.l); }
     if (s.warmup) bits.push("Warmup");
     if (s.focuses.length) bits.push(s.focuses.join(", "));
-    return bits.join(" · ");
+    return bits;
   }
+  function timeParts(s) {
+    return [fmtClock(s.startedAt) + "\u2013" + fmtClock(s.endedAt), fmtDur(s.minutes)].concat(s.edited ? ["edited"] : [], s.coachEditedAt ? ["coach edited"] : []);
+  }
+  function fillParts(el, parts) { el.textContent = ""; for (const t of parts) el.append(mk("span", "", t)); return el; }
   function updateDoneCard(c, s, wk) {
     c.dataset.week = wk;
     c.dataset.sid = s.id;
     c.querySelector(".ctype").textContent = TYPES[s.type].label;
-    c.querySelector(".cmeta").textContent = fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") + (s.coachEditedAt ? " · coach edited" : "");
-    const sum = sessionSummary(s), sumEl = c.querySelector(".csum");
-    sumEl.textContent = sum;
-    sumEl.hidden = !sum;
+    fillParts(c.querySelector(".cmeta"), timeParts(s));
+    const parts = sessionParts(s);
+    fillParts(c.querySelector(".csum"), parts).hidden = !parts.length;
     c.querySelector(".nc").textContent = counts(s) ? "" : "Doesn't count: " + shortReason(s);
     fillReadOnly(c.querySelector(".ro"), s);
   }
@@ -648,9 +651,9 @@
       for (const s of ses) {
         const ok = counts(s);
         const line = mk("div", "wl-line" + (s.endedAt ? (ok ? "" : " nc") : " live"));
-        line.append(mk("span", "", (s.endedAt ? (ok ? "\u2713 " : "\u2013 ") : "\u25cf ") + TYPES[s.type].label + " \u00b7 " + (s.endedAt ? fmtDur(s.minutes) : "now")));
-        const sum = s.endedAt ? sessionSummary(s) : "";
-        if (sum) line.append(mk("span", "wl-sum", sum));
+        line.append(mk("span", "wl-mark", s.endedAt ? (ok ? "\u2713" : "\u2013") : "\u25cf"), mk("span", "wl-type", TYPES[s.type].label), mk("span", "wl-dur", s.endedAt ? fmtDur(s.minutes) : "now"));
+        const parts = s.endedAt ? sessionParts(s) : [];
+        if (parts.length) line.append(fillParts(mk("span", "wl-sum"), parts));
         if (s.endedAt && !ok) line.append(mk("span", "wl-nc", "doesn't count (" + shortReason(s) + ")"));
         if (s.endedAt) {
           const rb = mk("button", "linkbtn rm", "Remove");
@@ -876,7 +879,7 @@
     const focusEdit = S.editEl && fe && S.editEl.contains(fe) ? { el: fe, a: fe.selectionStart, b: fe.selectionEnd } : null;
     let editFound = false;
     stats.textContent = "";
-    if (p.active && S.coachWk === mondayOf(S.today)) stats.append(mk("p", "status err", "● " + TYPES[p.active.type].label + " · since " + fmtClock(p.active.startedAt)));
+    if (p.active && S.coachWk === mondayOf(S.today)) stats.append(mk("p", "pd-live", (p.active.type === "ranked" ? "In a Ranked Session" : "In Training") + " since " + fmtClock(p.active.startedAt)));
     const w = S.rosterWeeks[id] || normWeek(null, S.coachWk);
     const st = weekStats(w);
     const ranks = mk("ul", "rank-list");
@@ -897,7 +900,10 @@
       for (const s of ses) {
         const ok = counts(s);
         const sb = mk("div", "pd-sess" + (s.endedAt ? (ok ? "" : " nc") : " live"));
-        sb.append(mk("p", "pd-line", (s.endedAt ? (ok ? "✓ " : "– ") : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") + (s.coachEditedAt ? " · coach edited" : "") : "since " + fmtClock(s.startedAt))));
+        const head = mk("p", "pd-line");
+        head.append(mk("span", "wl-mark", s.endedAt ? (ok ? "✓" : "–") : "●"), mk("b", "", TYPES[s.type].label));
+        for (const t of s.endedAt ? timeParts(s) : ["since " + fmtClock(s.startedAt)]) head.append(mk("span", "", t));
+        sb.append(head);
         if (s.endedAt && S.editOpen === s.id) {
           // The open editor keeps its own form across the 30-second refresh.
           editFound = true;
@@ -906,8 +912,8 @@
           dayBox.append(sb);
           continue;
         }
-        const sum = sessionSummary(s);
-        if (sum) sb.append(mk("p", "pd-line muted", sum));
+        const parts = sessionParts(s);
+        if (parts.length) sb.append(fillParts(mk("p", "pd-line muted"), parts));
         if (s.endedAt && !ok) sb.append(mk("p", "nc", "Doesn't count: " + shortReason(s)));
         const addRefl = (label, text) => { if (!text.trim()) return; const r = mk("p", "pd-refl"); r.append(mk("b", "", label + ": "), document.createTextNode(text.trim())); sb.append(r); };
         const rf = reflFor(s.type);
@@ -1065,7 +1071,7 @@
     const top = mk("div", "spread");
     top.append(mk("p", "big-date"));
     top.firstChild.id = "pdName";
-    const a = mk("a", "linkbtn", "Tracker ↗");
+    const a = mk("a", "linkbtn", "Tracker profile");
     a.id = "pdTracker"; a.target = "_blank"; a.rel = "noopener";
     top.append(a);
     body.append(top);
@@ -1172,7 +1178,10 @@
     statusEl.textContent = "";
     statusEl.className = "status";
     const box = mk("div", "copybox");
-    const code = mk("code", "", name + " · " + pw);
+    // Name and password as two plain lines; Copy puts both (and the site link) on the clipboard.
+    const code = mk("span", "copy-info");
+    code.append(mk("span", "", "Name: " + name), mk("span", "", "Password: "));
+    code.lastChild.append(mk("code", "", pw));
     const b = mk("button", "btn sm", "Copy");
     b.type = "button";
     b.addEventListener("click", async () => {
