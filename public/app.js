@@ -1,5 +1,9 @@
 (() => {
   "use strict";
+  // Which school this page is for (set in index.html before anything painted).
+  const ROUTE = window.BP_ROUTE || { kind: "school", slug: "nebraska", base: "/", api: "/api/", legacy: true };
+  if (ROUTE.kind !== "school") return;
+  document.getElementById("schoolApp").hidden = false;
 
   /* ---------- Constants ---------- */
   const PL = [
@@ -16,11 +20,17 @@
     training: { label: "Training", individual: true }
   };
   const DEFAULT_FOCUS = ["Car control", "Shooting", "Aerials", "Dribbling & flicks", "Rotation", "Defense", "Boost management", "Kickoffs", "Recoveries", "Reads & decisions"];
+  const DEFAULT_THEME = { primary: "#4289d1", secondary: "#ed8727", paper: "clean", fonts: "arena", shape: "angled", header: "color" };
   const DEFAULT_SETTINGS = {
-    title: "Nebraska Esports",
+    title: "",
     targets: { ranked: 3, training: 2, minGames: 5, minMinutes: 30 },
     rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } },
-    targetsLog: []
+    targetsLog: [],
+    rosters: [{ id: "varsity", name: "Varsity", casual: false }],
+    schedRosters: ["varsity"],
+    features: { reviews: true, schedule: true, ranks: true, board: true },
+    theme: DEFAULT_THEME,
+    logo: "", icon: "", tz: "America/Chicago"
   };
   const LONG_SESSION_MIN = 360;
   const REFL = [["well", ""], ["cost", ""], ["next", ""]];
@@ -30,10 +40,12 @@
     training: { notes: "What I did", q: [["well", "What clicked"], ["cost", "Still struggling with"], ["next", "Next session focus"]] }
   };
   const reflFor = t => REFL_BY_TYPE[t] || REFL_BY_TYPE.ranked;
-  const TEAMS = [["varsity", "Varsity"], ["white", "White"], ["black", "Black"], ["casual", "Casual"]];
-  const teamName = t => { const x = TEAMS.find(p => p[0] === t); return x ? x[1] : ""; };
-  // Casual players have no set sessions: no weekly requirement, and every finished session simply counts as logged.
-  const freeTeam = t => t === "casual";
+  // Rosters are the school's own (Varsity, JV, ...). A roster marked "no set sessions" has no weekly requirement,
+  // and every finished session on it simply counts as logged.
+  const rosterList = () => S.settings.rosters;
+  const teamName = t => { const x = rosterList().find(r => r.id === t); return x ? x.name : ""; };
+  const freeTeam = t => { const x = rosterList().find(r => r.id === t); return !!(x && x.casual); };
+  const feat = f => S.settings.features[f] !== false;
 
   /* ---------- Helpers ---------- */
   const $ = s => document.querySelector(s);
@@ -62,9 +74,10 @@
   function elapsedMin(iso) { return Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000)); }
   function hms(iso) { const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000)); return Math.floor(s / 3600) + ":" + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); }
   function genPassword() { const a = "abcdefghjkmnpqrstuvwxyz23456789"; const r = crypto.getRandomValues(new Uint8Array(8)); return Array.from(r, x => a[x % a.length]).join(""); }
+  const PREF = ROUTE.legacy ? "ne:" : "bp:" + ROUTE.slug + ":";
   const pref = {
-    get(k) { try { return localStorage.getItem("ne:" + k); } catch (_) { return null; } },
-    set(k, v) { try { localStorage.setItem("ne:" + k, v); } catch (_) {} }
+    get(k) { try { return localStorage.getItem(PREF + k); } catch (_) { return null; } },
+    set(k, v) { try { localStorage.setItem(PREF + k, v); } catch (_) {} }
   };
   function setStatus(el, msg, kind) { el.textContent = msg || ""; el.className = "status" + (kind ? " " + kind : ""); }
 
@@ -73,7 +86,7 @@
   async function api(method, path, body) {
     let res;
     try {
-      res = await fetch("/api/" + path, { method, credentials: "same-origin", headers: body !== undefined ? { "Content-Type": "application/json" } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
+      res = await fetch(ROUTE.api + path, { method, credentials: "same-origin", headers: body !== undefined ? { "Content-Type": "application/json" } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
     } catch (_) { throw new ApiError(0, "Can't reach the site. Check your connection."); }
     let data = null;
     try { data = await res.json(); } catch (_) {}
@@ -99,6 +112,20 @@
       s.rankedGoals[p.key] = { min: numOrNull(g.min), max: numOrNull(g.max) };
     }
     s.targetsLog = normLog(raw.targetsLog, true);
+    if (Array.isArray(raw.rosters) && raw.rosters.length) s.rosters = raw.rosters.filter(r => isPlain(r) && typeof r.id === "string" && typeof r.name === "string").map(r => ({ id: r.id, name: str(r.name, 20), casual: !!r.casual }));
+    s.schedRosters = Array.isArray(raw.schedRosters) ? raw.schedRosters.filter(x => typeof x === "string") : s.rosters.filter(r => !r.casual).map(r => r.id);
+    if (isPlain(raw.features)) for (const f of Object.keys(s.features)) s.features[f] = raw.features[f] !== false;
+    const th = isPlain(raw.theme) ? raw.theme : {}, isHex = v => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+    s.theme = {
+      primary: isHex(th.primary) ? th.primary.toLowerCase() : DEFAULT_THEME.primary,
+      secondary: th.secondary === "" ? "" : isHex(th.secondary) ? th.secondary.toLowerCase() : DEFAULT_THEME.secondary,
+      paper: ["clean", "white", "cream"].includes(th.paper) ? th.paper : "clean",
+      fonts: ["arena", "classic", "block"].includes(th.fonts) ? th.fonts : "arena",
+      shape: th.shape === "rounded" ? "rounded" : "angled",
+      header: th.header === "light" ? "light" : "color"
+    };
+    s.logo = str(raw.logo, 200); s.icon = str(raw.icon, 200);
+    if (typeof raw.tz === "string" && raw.tz) s.tz = raw.tz;
     return s;
   }
   // Requirement history: entries apply from their Monday on (team entries carry all four numbers; a player's carry overrides or null).
@@ -128,7 +155,7 @@
     return out;
   }
   function normUser(u) {
-    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: TEAMS.some(t => t[0] === u.team) ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0 };
+    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: typeof u.team === "string" && u.team ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0 };
   }
   function normPrefs(p) {
     const out = { layout: {} }, lay = isPlain(p) && isPlain(p.layout) ? p.layout : {};
@@ -166,7 +193,8 @@
     view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
     removals: {}, myHist: [], hist: {}, pweeks: {}, myReviews: [], reviews: [], layEdit: false, layApplied: {}, noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
-    undo: [], saveErr: null, settingsDirty: false, board: null
+    events: [], schedAccess: false, cEvents: [], evEdit: null, school: null, paused: false, missing: false,
+    undo: [], saveErr: null, settingsDirty: false, lookPreview: false, board: null
   };
 
   /* ---------- Saving ---------- */
@@ -324,7 +352,60 @@
   function showWin(sel) { const w = $(sel); setMin(w, false); pref.set("min:" + w.id, "0"); w.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" }); }
 
   /* ---------- Header + taskbar ---------- */
-  function renderHeader() { $("#teamTitle").textContent = S.settings.title; document.title = S.settings.title; }
+  /* ---------- The school's look: colors, background, lettering, corners, header ---------- */
+  const PAPERS = { clean: ["#f3f5f8", "#ffffff"], white: ["#ffffff", "#ffffff"], cream: ["#f5f1e7", "#f5f1e7"] };
+  function rgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  function lum(h) { return rgb(h).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0); }
+  function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
+  // Text on a color: the first choice that reads well, else whichever of white or black reads best.
+  function onColor(bg, prefs) { for (const c of prefs) if (contrast(bg, c) >= 4.5) return c; return contrast(bg, "#ffffff") >= contrast(bg, "#000000") ? "#ffffff" : "#000000"; }
+  function themeVars(t) {
+    const [paper, surface] = PAPERS[t.paper] || PAPERS.clean;
+    const ink = t.paper === "cream" ? "#1c1c1c" : "#000000";
+    const brand = t.primary, accent = t.secondary || t.primary;
+    return {
+      vars: {
+        "--brand": brand, "--on-brand": onColor(brand, [paper, "#ffffff", ink]), "--brand-text": contrast(brand, paper) >= 3 ? brand : ink,
+        "--accent": accent, "--on-accent": onColor(accent, ["#ffffff", ink, paper]), "--accent-text": contrast(accent, paper) >= 3 ? accent : ink,
+        "--paper": paper, "--surface": surface, "--ink": ink
+      },
+      attrs: { shape: t.shape, fonts: t.fonts, header: t.header, paper: t.paper, accent: t.secondary ? "yes" : "no" }
+    };
+  }
+  function applyTheme(settings, preview) {
+    const th = themeVars(settings.theme), html = document.documentElement;
+    for (const k in th.vars) html.style.setProperty(k, th.vars[k]);
+    for (const a in th.attrs) html.dataset[a] = th.attrs[a];
+    $("#themeColor").content = settings.theme.header === "light" ? th.vars["--surface"] : th.vars["--brand"];
+    if (!preview) { try { localStorage.setItem("bp:theme:" + ROUTE.slug, JSON.stringify(th)); } catch (_) {} }
+  }
+  // Initials stand in for a logo until the school uploads one.
+  function initials(title) {
+    const w = String(title || "").split(/\s+/).filter(x => x && !/^(of|the|and|at|esports|university|college)$/i.test(x));
+    return (w.length ? w : String(title || "BP").split(/\s+/)).slice(0, 2).map(x => x[0]).join("").toUpperCase() || "BP";
+  }
+  function paintLogo(img, mono, settings) {
+    const src = settings.logo;
+    img.hidden = !src;
+    if (src && img.getAttribute("src") !== src) img.src = src;
+    mono.hidden = !!src;
+    mono.textContent = initials(settings.title);
+  }
+  function renderHeader() {
+    const s = S.settings, title = S.missing ? "" : s.title || (S.school && S.school.name) || "";
+    $("#logoBox").hidden = S.missing;
+    $("#teamTitle").textContent = title;
+    document.title = title ? title + " · Backpost" : "Backpost";
+    paintLogo($("#schoolLogo"), $("#monoLogo"), s);
+    paintLogo($("#authLogo"), $("#authMono"), s);
+    $("#authTitle").textContent = title;
+    $("#favicon").href = s.icon || "/bp/favicon-32.png";
+    $("#touchIcon").href = s.icon || "/bp/apple-touch-icon.png";
+    $("#appleTitle").content = title.length > 14 ? title.split(" ")[0] : title || "Backpost";
+    const man = ROUTE.api + "manifest";
+    if ($("#manifestLink").getAttribute("href") !== man) $("#manifestLink").href = man;
+    if (!S.lookPreview) applyTheme(s);
+  }
   function setView(v) { S.view = v; pref.set("view", v); if (v === "coach") loadCoach(); renderAll(); window.scrollTo({ top: 0 }); }
   function renderTaskbar() {
     const box = $("#taskBtns");
@@ -336,8 +417,8 @@
       add("My Training", "view", S.view === "player", () => setView("player"));
       box.append(mk("span", "tsep"));
     }
-    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Reviews", "#winReviews"], ["Player", "#winPlayer"], ["Board", "#winBoardC"], ["Settings", "#winSettings"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Ranks", "#winRanks"], ["Board", "#winBoard"]];
-    for (const [label, sel] of secs) add(label, "sec", null, () => showWin(sel));
+    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Schedule", "#winSchedC"], ["Reviews", "#winReviews"], ["Player", "#winPlayer"], ["Board", "#winBoardC"], ["Settings", "#winSettings"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Schedule", "#winSched"], ["Ranks", "#winRanks"], ["Board", "#winBoard"]];
+    for (const [label, sel] of secs) if (!$(sel).hidden) add(label, "sec", null, () => showWin(sel));
     rvBadge();
     add("Layout", "sec lay", S.layEdit, () => setLayEdit(!S.layEdit));
     add(S.me.name || "Account", "acct", null, openAccount);
@@ -354,26 +435,20 @@
 
   /* ---------- Auth ---------- */
   function renderAuth() {
-    const setup = S.needsSetup;
-    $("#tAuth").textContent = setup ? "Create Coach Account" : "Sign On";
-    $("#authPw2Row").hidden = !setup;
-    $("#authPw").autocomplete = setup ? "new-password" : "current-password";
-    $("#authGo").textContent = setup ? "Create" : "Sign On";
+    $("#tAuth").textContent = "Sign in";
+    $("#authForm").querySelectorAll("input,button").forEach(x => { x.disabled = S.paused; });
+    if (S.paused) setStatus($("#authStatus"), "This team is paused on Backpost. Check with your coach.", "err");
   }
   $("#authForm").addEventListener("submit", async e => {
     e.preventDefault();
     const st = $("#authStatus"), go = $("#authGo");
     const name = $("#authName").value.trim(), pw = $("#authPw").value;
     if (!name || !pw) { setStatus(st, "Enter your name and password.", "err"); return; }
-    if (S.needsSetup) {
-      if (pw.length < 8) { setStatus(st, "Use at least 8 characters.", "err"); return; }
-      if (pw !== $("#authPw2").value) { setStatus(st, "Passwords don't match.", "err"); return; }
-    }
     go.disabled = true;
     setStatus(st, "");
     try {
-      await api("POST", S.needsSetup ? "setup" : "login", { name, password: pw });
-      $("#authPw").value = ""; $("#authPw2").value = "";
+      await api("POST", "login", { name, password: pw });
+      $("#authPw").value = "";
       await boot();
     } catch (err) { setStatus(st, err.message, "err"); }
     finally { go.disabled = false; }
@@ -382,8 +457,8 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.layEdit = false; S.layApplied = {}; S.needsSetup = false;
-    setStatus($("#authStatus"), "Signed out. Sign on again.", "err");
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.events = []; S.cEvents = []; S.evEdit = null; S.layEdit = false; S.layApplied = {}; S.needsSetup = false;
+    setStatus($("#authStatus"), "Signed out. Sign in again.", "err");
     renderAll();
   }
   function openAccount() {
@@ -515,6 +590,7 @@
     const isRanked = a.type === "ranked", isTrain = a.type === "training";
     c.querySelector(".sec-warm").hidden = !(isRanked || isTrain);
     c.querySelectorAll(".sec-ranked").forEach(x => { x.hidden = !isRanked; });
+    c.querySelector(".rv").hidden = !isRanked || !feat("reviews");
     c.querySelector(".sec-focus").hidden = !isTrain;
     const T = targetsFor(S.me, a.week), hint = c.querySelector(".counts-hint");
     const have = isRanked ? (s ? gamesIn(s) : 0) : elapsedMin(a.startedAt), need = isRanked ? T.minGames : T.minMinutes;
@@ -891,8 +967,9 @@
     coachLoading = true;
     const wk = S.coachWk;
     try {
-      const [p, w, rv] = await Promise.all([api("GET", "coach/players"), api("GET", "coach/weeks/" + wk), api("GET", "coach/reviews").catch(() => null)]);
+      const [p, w, rv, ev] = await Promise.all([api("GET", "coach/players"), api("GET", "coach/weeks/" + wk), api("GET", "coach/reviews").catch(() => null), feat("schedule") ? api("GET", "coach/events").catch(() => null) : null]);
       if (rv) S.reviews = (rv.reviews || []).map(normReview);
+      if (ev) S.cEvents = (ev.events || []).map(normEvent);
       S.roster = {};
       for (const u of p.players || []) { const n = normUser(u); S.roster[n.id] = n; }
       if (wk === S.coachWk) {
@@ -904,6 +981,8 @@
     } catch (_) {}
     finally { coachLoading = false; }
     renderCoach();
+    // Roster counts in Settings come from the roster that just loaded.
+    if (draft && !$("#rosterEd").contains(document.activeElement)) renderRosterEd();
     if (S.sel) { loadHist(S.sel); loadPast(S.sel); }
   }
   async function loadPast(id) {
@@ -981,6 +1060,7 @@
     }
     renderPlayerDetail();
     renderReviews();
+    renderSchedC();
   }
 
   /* ---------- Coach: replay review requests ---------- */
@@ -1041,7 +1121,10 @@
     $("#tPlayer").textContent = p.name;
     $("#pdName").textContent = p.name;
     const ts = $("#pdTeam");
-    if (ts && document.activeElement !== ts) ts.value = p.team || "varsity";
+    if (ts && document.activeElement !== ts) {
+      if (ts.options.length !== rosterList().length || rosterList().some((r, i) => ts.options[i].value !== r.id || ts.options[i].text !== r.name)) { ts.textContent = ""; rosterList().forEach(r => ts.append(new Option(r.name, r.id))); }
+      ts.value = p.team || "";
+    }
     const link = $("#pdTracker");
     link.hidden = !p.trackerUrl;
     if (p.trackerUrl) link.href = p.trackerUrl;
@@ -1054,12 +1137,14 @@
     if (p.active && S.coachWk === mondayOf(S.today)) stats.append(mk("p", "status err", "● " + TYPES[p.active.type].label + " · since " + fmtClock(p.active.startedAt)));
     const w = S.rosterWeeks[id] || normWeek(null, S.coachWk);
     const st = weekStats(w, p);
-    const ranks = mk("ul", "rank-list");
-    rankRows(ranks, p.ranks, S.hist[id] || []);
-    stats.append(ranks);
-    const stamp = rankStamp(p.ranks);
-    if (stamp) stats.append(mk("p", "fine", stamp));
-    if (!p.trackerUrl) stats.append(mk("p", "fine", "No tracker link"));
+    if (feat("ranks")) {
+      const ranks = mk("ul", "rank-list");
+      rankRows(ranks, p.ranks, S.hist[id] || []);
+      stats.append(ranks);
+      const stamp = rankStamp(p.ranks);
+      if (stamp) stats.append(mk("p", "fine", stamp));
+      if (!p.trackerUrl) stats.append(mk("p", "fine", "No tracker link"));
+    }
     const rows = reqRows(st, p, S.coachWk);
     const reqs = mk("div", "reqs");
     renderReqs(reqs, rows);
@@ -1294,7 +1379,7 @@
     if (p.role === "player") btn("Requirement", "", () => {
       const cur = S.roster[id], T = targetsFor(cur, mondayOf(S.today));
       const inner = freeTeam(cur.team)
-        ? '<p class="fine">Casual players have no set sessions. Move them to a team to give them a requirement.</p>'
+        ? '<p class="fine">' + teamName(cur.team) + ' has no set sessions. Move this player to another roster to give them a requirement.</p>'
         : '<div class="ef-grid"><label>Ranked Sessions<input type="number" name="rq-ranked" min="0" max="14" step="1"></label><label>Training sessions<input type="number" name="rq-training" min="0" max="14" step="1"></label></div>' +
           '<p class="fine">Applies from this week on. Past weeks keep theirs.</p><div class="row"><button type="button" class="linkbtn" data-team>Use the team requirement</button></div>';
       const f = form("Weekly requirement", inner, "Save", async f2 => {
@@ -1349,11 +1434,11 @@
     }
     if (p.role === "player") {
       const tr = mk("label", "pd-team");
-      tr.append(mk("span", "lbl", "Team"));
+      tr.append(mk("span", "lbl", "Roster"));
       const sel = mk("select");
       sel.id = "pdTeam";
-      TEAMS.forEach(([k, l]) => sel.append(new Option(l, k)));
-      sel.value = p.team || "varsity";
+      rosterList().forEach(r => sel.append(new Option(r.name, r.id)));
+      sel.value = p.team || "";
       sel.addEventListener("change", () => patch({ team: sel.value }, "Moved to " + teamName(sel.value) + "."));
       tr.append(sel);
       body.append(tr);
@@ -1383,7 +1468,13 @@
   $("#addOpen").addEventListener("click", () => {
     const f = $("#addForm");
     f.hidden = !f.hidden;
-    if (!f.hidden) { $("#addPw").value = genPassword(); $("#addTeam").value = "varsity"; setStatus($("#addStatus"), ""); $("#addName").focus(); }
+    if (!f.hidden) {
+      const sel = $("#addTeam");
+      sel.textContent = "";
+      rosterList().forEach(r => sel.append(new Option(r.name, r.id)));
+      sel.value = (rosterList().find(r => !r.casual) || rosterList()[0]).id;
+      $("#addPw").value = genPassword(); setStatus($("#addStatus"), ""); $("#addName").focus();
+    }
   });
   $("#addGen").addEventListener("click", () => { $("#addPw").value = genPassword(); });
   $("#addCancel").addEventListener("click", () => { $("#addForm").hidden = true; });
@@ -1409,17 +1500,49 @@
   $("#cwNext").addEventListener("click", () => coachWeek(addDays(S.coachWk, 7)));
   $("#cwThis").addEventListener("click", () => coachWeek(mondayOf(S.today)));
 
-  // Settings
+  /* ---------- Settings: Team, Look, Rosters, Requirements ---------- */
   (function buildGoalGrid() {
     const g = $("#goalGrid");
     for (const p of PL) g.insertAdjacentHTML("beforeend",
       '<label for="g-' + p.key + '-min">' + p.short + ' min<input type="number" id="g-' + p.key + '-min" min="0" max="60" step="1"></label>' +
       '<label for="g-' + p.key + '-max">' + p.short + ' max<input type="number" id="g-' + p.key + '-max" min="0" max="60" step="1"></label>');
   })();
+  const TZS = [["America/New_York", "Eastern"], ["America/Chicago", "Central"], ["America/Denver", "Mountain"], ["America/Phoenix", "Arizona"], ["America/Los_Angeles", "Pacific"], ["America/Anchorage", "Alaska"], ["Pacific/Honolulu", "Hawaii"]];
+  let draft = null, rosterKeys = 0;
+  function setTab(tab) {
+    document.querySelectorAll("#settingsForm .seg-b").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
+    document.querySelectorAll("#settingsForm .tabp").forEach(p => { p.hidden = p.dataset.panel !== tab; });
+  }
+  document.querySelectorAll("#settingsForm .seg-b").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
+  function markDirty() { S.settingsDirty = true; $("#setRevert").hidden = false; setStatus($("#setStatus"), ""); }
   function renderSettingsForm(force) {
     if (!S.me || S.me.role !== "coach" || (S.settingsDirty && !force)) return;
-    const s = S.settings;
+    draft = clone(S.settings);
+    draft.rosters.forEach(r => { r.key = "k" + (++rosterKeys); });
+    fillSettings();
+  }
+  function fillSettings() {
+    const s = draft;
     setVal($("#setTitle"), s.title);
+    const tz = $("#setTz"), zones = TZS.slice();
+    if (!zones.some(z => z[0] === s.tz)) zones.push([s.tz, s.tz.replace(/_/g, " ")]);
+    if (tz.options.length !== zones.length) { tz.textContent = ""; zones.forEach(([v, l]) => tz.append(new Option(l, v))); }
+    tz.value = s.tz;
+    document.querySelectorAll("#featBox [data-feat]").forEach(c => { c.checked = s.features[c.dataset.feat] !== false; });
+    renderSchedRosterBox();
+    // Look
+    paintLogo($("#setLogoImg"), $("#setMono"), s);
+    $("#setLogoRm").hidden = !s.logo || !/^\/api\//.test(s.logo);
+    setVal($("#setPrimary"), s.theme.primary); setVal($("#setPrimaryHex"), s.theme.primary);
+    const sec = s.theme.secondary;
+    $("#setNoSecondary").checked = !sec;
+    $("#setSecondary").disabled = $("#setSecondaryHex").disabled = !sec;
+    setVal($("#setSecondary"), sec || "#ed8727"); setVal($("#setSecondaryHex"), sec || "");
+    for (const k of ["paper", "fonts", "shape", "header"]) document.querySelectorAll('#settingsForm input[name="' + k + '"]').forEach(r => { r.checked = r.value === s.theme[k]; });
+    $("#lookNote").hidden = !S.lookPreview;
+    // Rosters
+    renderRosterEd();
+    // Requirements
     setVal($("#setRanked"), String(s.targets.ranked));
     setVal($("#setTraining"), String(s.targets.training));
     setVal($("#setMinGames"), String(s.targets.minGames));
@@ -1429,34 +1552,374 @@
       setVal($("#g-" + p.key + "-min"), g.min === null ? "" : String(g.min));
       setVal($("#g-" + p.key + "-max"), g.max === null ? "" : String(g.max));
     }
+    $("#setRevert").hidden = !S.settingsDirty;
   }
-  $("#settingsForm").addEventListener("input", () => { S.settingsDirty = true; setStatus($("#setStatus"), ""); });
+  function renderSchedRosterBox() {
+    const box = $("#schedRosterBox");
+    box.textContent = "";
+    for (const r of draft.rosters) {
+      if (!r.id) continue;
+      const l = mk("label", "chk"), c = mk("input");
+      c.type = "checkbox"; c.checked = draft.schedRosters.includes(r.id);
+      c.addEventListener("change", () => { draft.schedRosters = draft.rosters.filter(x => x.id && (x.id === r.id ? c.checked : draft.schedRosters.includes(x.id))).map(x => x.id); markDirty(); });
+      l.append(c, document.createTextNode(" " + r.name));
+      box.append(l);
+    }
+    if (!box.children.length) box.append(mk("p", "fine", "Save your rosters first."));
+  }
+  function renderRosterEd() {
+    const box = $("#rosterEd");
+    const fe = document.activeElement, keep = fe && fe.dataset && fe.dataset.rk ? { k: fe.dataset.rk, a: fe.selectionStart } : null;
+    box.textContent = "";
+    const counts = {};
+    for (const id of Object.keys(S.roster)) { const t = S.roster[id].role === "player" ? S.roster[id].team : null; if (t) counts[t] = (counts[t] || 0) + 1; }
+    for (const r of draft.rosters) {
+      const row = mk("div", "rost-row");
+      const name = mk("input"); name.type = "text"; name.maxLength = 20; name.value = r.name; name.dataset.rk = r.key;
+      name.setAttribute("aria-label", "Roster name");
+      name.addEventListener("input", () => { r.name = name.value; markDirty(); });
+      const cas = mk("label", "chk"), cb = mk("input");
+      cb.type = "checkbox"; cb.checked = r.casual;
+      cb.addEventListener("change", () => { r.casual = cb.checked; markDirty(); });
+      cas.append(cb, document.createTextNode(" No set sessions"));
+      const n = r.id ? counts[r.id] || 0 : 0;
+      const info = mk("span", "fine", n === 1 ? "1 player" : n + " players");
+      const rm = mk("button", "linkbtn rm", "Remove"); rm.type = "button";
+      rm.disabled = n > 0 || draft.rosters.length < 2;
+      rm.title = n > 0 ? "Move these players to another roster first" : "";
+      rm.addEventListener("click", () => { draft.rosters = draft.rosters.filter(x => x !== r); draft.schedRosters = draft.schedRosters.filter(x => x !== r.id); markDirty(); renderRosterEd(); renderSchedRosterBox(); });
+      row.append(name, cas, info, rm);
+      box.append(row);
+    }
+    $("#rosterAdd").disabled = draft.rosters.length >= 8;
+    if (keep) { const t = box.querySelector('[data-rk="' + keep.k + '"]'); if (t) { t.focus(); try { t.setSelectionRange(keep.a, keep.a); } catch (_) {} } }
+  }
+  $("#rosterAdd").addEventListener("click", () => {
+    if (draft.rosters.length >= 8) return;
+    draft.rosters.push({ name: "New roster", casual: false, key: "k" + (++rosterKeys) });
+    markDirty(); renderRosterEd();
+    const inputs = $("#rosterEd").querySelectorAll("input[type=text]"); const last = inputs[inputs.length - 1];
+    if (last) { last.focus(); last.select(); }
+  });
+  // Look changes show right away as a preview; they're kept only when saved.
+  function previewLook() { S.lookPreview = true; applyTheme(draft, true); paintLogo($("#schoolLogo"), $("#monoLogo"), draft); $("#lookNote").hidden = false; }
+  const hexOk = v => /^#[0-9a-f]{6}$/i.test(v);
+  $("#settingsForm").addEventListener("input", e => {
+    const t = e.target;
+    if (!draft) return;
+    if (t.id === "setTitle") draft.title = t.value;
+    else if (t.id === "setPrimary" || t.id === "setPrimaryHex") { const v = t.value.trim(); if (hexOk(v)) { draft.theme.primary = v.toLowerCase(); setVal($(t.id === "setPrimary" ? "#setPrimaryHex" : "#setPrimary"), draft.theme.primary); previewLook(); } }
+    else if (t.id === "setSecondary" || t.id === "setSecondaryHex") { const v = t.value.trim(); if (hexOk(v)) { draft.theme.secondary = v.toLowerCase(); setVal($(t.id === "setSecondary" ? "#setSecondaryHex" : "#setSecondary"), draft.theme.secondary); previewLook(); } }
+    else if (t.closest(".set-grid")) { /* read on save */ }
+    else return;
+    markDirty();
+  });
+  $("#settingsForm").addEventListener("change", e => {
+    const t = e.target;
+    if (!draft) return;
+    if (t.id === "setTz") draft.tz = t.value;
+    else if (t.dataset.feat) draft.features[t.dataset.feat] = t.checked;
+    else if (t.id === "setNoSecondary") { draft.theme.secondary = t.checked ? "" : ($("#setSecondary").value || "#ed8727"); $("#setSecondary").disabled = $("#setSecondaryHex").disabled = t.checked; setVal($("#setSecondaryHex"), draft.theme.secondary); previewLook(); }
+    else if (["paper", "fonts", "shape", "header"].includes(t.name)) { draft.theme[t.name] = t.value; previewLook(); }
+    else return;
+    markDirty();
+  });
+  $("#setRevert").addEventListener("click", () => {
+    S.settingsDirty = false; S.lookPreview = false;
+    applyTheme(S.settings); renderHeader();
+    renderSettingsForm(true);
+    setStatus($("#setStatus"), "");
+  });
   $("#settingsForm").addEventListener("submit", async e => {
     e.preventDefault();
     const goals = {};
     for (const p of PL) goals[p.key] = { min: $("#g-" + p.key + "-min").value, max: $("#g-" + p.key + "-max").value };
-    const draft = { title: $("#setTitle").value.trim(), targets: { ranked: $("#setRanked").value, training: $("#setTraining").value, minGames: $("#setMinGames").value, minMinutes: $("#setMinMinutes").value }, rankedGoals: goals };
+    const out = clone(draft);
+    out.title = $("#setTitle").value.trim();
+    out.targets = { ranked: $("#setRanked").value, training: $("#setTraining").value, minGames: $("#setMinGames").value, minMinutes: $("#setMinMinutes").value };
+    out.rankedGoals = goals;
+    out.rosters = draft.rosters.map(r => (r.id ? { id: r.id, name: r.name, casual: r.casual } : { name: r.name, casual: r.casual }));
+    if (out.rosters.some(r => !r.name.trim())) { setTab("rosters"); setStatus($("#setStatus"), "Give every roster a name.", "err"); return; }
     try {
-      const r = await api("PUT", "coach/settings", { settings: draft, from: mondayOf(S.today) });
+      const r = await api("PUT", "coach/settings", { settings: out, from: mondayOf(S.today) });
       S.settings = normSettings(r.settings);
-      S.settingsDirty = false;
+      S.settingsDirty = false; S.lookPreview = false;
       renderSettingsForm(true);
       setStatus($("#setStatus"), "Saved.", "ok");
       renderAll();
     } catch (err) { setStatus($("#setStatus"), err.message, "err"); }
   });
+  /* Logo upload: made into a PNG in the browser (any SVG or photo becomes plain pixels), plus a 512 x 512 app icon. */
+  async function loadImage(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      return img;
+    } finally { setTimeout(() => URL.revokeObjectURL(url), 2000); }
+  }
+  function trimmed(img) {
+    const w = img.naturalWidth || 512, h = img.naturalHeight || 512, k = Math.min(1, 1024 / Math.max(w, h));
+    const c = document.createElement("canvas"); c.width = Math.round(w * k); c.height = Math.round(h * k);
+    const g = c.getContext("2d"); g.drawImage(img, 0, 0, c.width, c.height);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) if (d[(y * c.width + x) * 4 + 3] > 8) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (x1 < 0) return c;
+    const out = document.createElement("canvas"); out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+    out.getContext("2d").drawImage(c, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+    return out;
+  }
+  function fitPng(src, box, bg, pad) {
+    const c = document.createElement("canvas");
+    const k = Math.min((box * (1 - 2 * pad)) / src.width, (box * (1 - 2 * pad)) / src.height, bg ? 99 : 1);
+    if (bg) { c.width = c.height = box; const g = c.getContext("2d"); g.fillStyle = bg; g.fillRect(0, 0, box, box); g.drawImage(src, (box - src.width * k) / 2, (box - src.height * k) / 2, src.width * k, src.height * k); }
+    else { c.width = Math.max(1, Math.round(src.width * k)); c.height = Math.max(1, Math.round(src.height * k)); c.getContext("2d").drawImage(src, 0, 0, c.width, c.height); }
+    return c.toDataURL("image/png").split(",")[1];
+  }
+  $("#setLogoFile").addEventListener("change", async e => {
+    const file = e.target.files && e.target.files[0], st = $("#setStatus");
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { setStatus(st, "That file is too big. Use one under 8 MB.", "err"); return; }
+    setStatus(st, "Uploading logo…");
+    try {
+      const art = trimmed(await loadImage(file));
+      let logo = fitPng(art, 512, null, 0);
+      if (logo.length > 540000) logo = fitPng(art, 320, null, 0);
+      const bg = $("#setIconBg").value === "white" ? "#ffffff" : draft.theme.primary;
+      const icon = fitPng(art, 512, bg, 0.18);
+      const r = await api("PUT", "coach/asset", { logo, icon });
+      const fresh = normSettings(r.settings);
+      S.settings.logo = draft.logo = fresh.logo; S.settings.icon = draft.icon = fresh.icon;
+      renderHeader(); fillSettings();
+      setStatus(st, "Logo saved.", "ok");
+    } catch (err) { setStatus(st, err.message || "That image couldn't be read. Try a PNG.", "err"); }
+  });
+  $("#setLogoRm").addEventListener("click", async () => {
+    try {
+      const r = await api("DELETE", "coach/asset");
+      const fresh = normSettings(r.settings);
+      S.settings.logo = draft.logo = fresh.logo; S.settings.icon = draft.icon = fresh.icon;
+      renderHeader(); fillSettings();
+      setStatus($("#setStatus"), "Logo removed.", "ok");
+    } catch (err) { setStatus($("#setStatus"), err.message, "err"); }
+  });
+
+  /* ---------- Schedule: matches, scrims and film sessions ---------- */
+  const EV_KIND = { match: "Match", scrim: "Scrim", film: "Film session" };
+  const RSVP_L = { in: "In", maybe: "Maybe", out: "Out" };
+  function normEvent(e) {
+    return {
+      id: String(e.id), kind: EV_KIND[e.kind] ? e.kind : "scrim", opponent: str(e.opponent, 60), startsAt: str(e.startsAt, 40), format: str(e.format, 40),
+      details: str(e.details, 1000), link: /^https?:\/\//i.test(e.link || "") ? str(e.link, 300) : "", teams: Array.isArray(e.teams) ? e.teams.filter(x => typeof x === "string") : [],
+      result: str(e.result, 40), reviews: Array.isArray(e.reviews) ? e.reviews.filter(x => typeof x === "string") : [],
+      rsvps: Array.isArray(e.rsvps) ? e.rsvps.filter(isPlain).map(r => ({ userId: String(r.userId), name: str(r.name, 32), status: RSVP_L[r.status] ? r.status : "" })) : [],
+      mine: RSVP_L[e.mine] ? e.mine : ""
+    };
+  }
+  const evTitle = e => e.kind === "film" ? e.opponent : "vs " + e.opponent;
+  const evMs = e => new Date(e.startsAt).getTime();
+  function dayTag(d) {
+    const t = S.today;
+    return d === t ? "Today" : d === addDays(t, 1) ? "Tomorrow" : "";
+  }
+  function evItem(e, coach) {
+    const li = mk("li", "ev ev-" + e.kind + (evMs(e) < Date.now() - 3 * 3600e3 ? " past" : ""));
+    li.dataset.id = e.id;
+    const when = mk("p", "ev-time", fmtClock(e.startsAt));
+    const main = mk("div", "ev-main");
+    const top = mk("p", "ev-top");
+    top.append(mk("span", "ev-kind", EV_KIND[e.kind]), mk("span", "ev-title", evTitle(e)));
+    main.append(top);
+    const meta = [];
+    if (e.format) meta.push(e.format);
+    if (coach || e.teams.length > 1) meta.push(e.teams.map(teamName).filter(Boolean).join(", "));
+    if (e.result) meta.push("Result: " + e.result);
+    if (meta.length) main.append(mk("p", "ev-meta", meta.join(" — ")));
+    if (e.details) main.append(mk("p", "ev-details", e.details));
+    if (e.kind === "film" && e.reviews.length) {
+      const rv = S.reviews.length ? S.reviews : S.myReviews;
+      const names = e.reviews.map(id => rv.find(r => r.id === id)).filter(Boolean).map(r => (r.name || S.me.name) + ": " + (r.note.length > 60 ? r.note.slice(0, 59) + "…" : r.note));
+      if (names.length) { const ul = mk("ul", "ev-reviews"); names.forEach(n => ul.append(mk("li", "", n))); main.append(ul); }
+    }
+    if (e.link) { const a = mk("a", "linkbtn", "Open link"); a.href = e.link; a.target = "_blank"; a.rel = "noopener noreferrer"; main.append(a); }
+    const tally = { in: [], maybe: [], out: [] };
+    e.rsvps.forEach(r => { if (tally[r.status]) tally[r.status].push(r.name); });
+    const future = evMs(e) > Date.now() - 6 * 3600e3;
+    if (!coach && future) {
+      const seg = mk("div", "rsvp");
+      seg.setAttribute("role", "group");
+      seg.setAttribute("aria-label", "Are you in?");
+      for (const k of ["in", "maybe", "out"]) {
+        const b = mk("button", "rsvp-b rsvp-" + k, RSVP_L[k]); b.type = "button";
+        b.setAttribute("aria-pressed", String(e.mine === k));
+        b.addEventListener("click", () => rsvp(e, e.mine === k ? "" : k, b));
+        seg.append(b);
+      }
+      main.append(seg);
+    }
+    const lines = ["in", "maybe", "out"].filter(k => tally[k].length).map(k => RSVP_L[k] + ": " + tally[k].join(", "));
+    if (coach && future) {
+      const answered = new Set(e.rsvps.map(r => r.userId));
+      const waiting = Object.values(S.roster).filter(p => p.role === "player" && e.teams.includes(p.team) && S.settings.schedRosters.includes(p.team) && !answered.has(p.id)).map(p => p.name).sort();
+      if (waiting.length) lines.push("No answer: " + waiting.join(", "));
+    }
+    if (lines.length) main.append(mk("p", "ev-who", lines.join("  |  ")));
+    if (coach) {
+      const row = mk("div", "row");
+      const ed = mk("button", "linkbtn", "Edit"); ed.type = "button";
+      ed.addEventListener("click", () => { S.evEdit = e.id; renderEvForm(); });
+      const rm = mk("button", "linkbtn rm", "Delete"); rm.type = "button";
+      rm.addEventListener("click", () => armOrRun(rm, async () => {
+        rm.disabled = true;
+        try { await api("DELETE", "coach/events/" + e.id); S.cEvents = S.cEvents.filter(x => x.id !== e.id); renderSchedC(); }
+        catch (err) { rm.disabled = false; }
+      }, "Confirm"));
+      row.append(ed, rm);
+      main.append(row);
+    }
+    li.append(when, main);
+    return li;
+  }
+  function schedInto(box, list, coach) {
+    box.textContent = "";
+    const now = Date.now();
+    const up = list.filter(e => evMs(e) >= now - 3 * 3600e3).sort((a, b) => evMs(a) - evMs(b));
+    const past = list.filter(e => evMs(e) < now - 3 * 3600e3).sort((a, b) => evMs(b) - evMs(a)).slice(0, coach ? 8 : 5);
+    if (!up.length) box.append(mk("p", "empty", coach ? "Nothing scheduled. Add a match, scrim or film session." : "Nothing scheduled yet."));
+    let day = null, ul = null;
+    for (const e of up) {
+      const d = ymd(new Date(e.startsAt));
+      if (d !== day) {
+        day = d;
+        const h = mk("h3", "ev-day", fmtDate(d, { weekday: "short", month: "short", day: "numeric" }));
+        const tag = dayTag(d);
+        if (tag) h.append(mk("span", "ev-tag", tag));
+        ul = mk("ul", "ev-list");
+        box.append(h, ul);
+      }
+      ul.append(evItem(e, coach));
+    }
+    if (past.length) {
+      box.append(mk("h3", "ev-day past-h", "Recent"));
+      const pl = mk("ul", "ev-list");
+      past.forEach(e => pl.append(evItem(e, coach)));
+      box.append(pl);
+    }
+  }
+  function renderSched() { if (S.me && !$("#winSched").hidden) schedInto($("#schedList"), S.events, false); }
+  function renderSchedC() {
+    if (!S.me || S.me.role !== "coach" || $("#winSchedC").hidden) return;
+    // A form that's open keeps its place through the 30-second refresh.
+    schedInto($("#schedListC"), S.cEvents, true);
+  }
+  async function rsvp(e, status, btn) {
+    btn.disabled = true;
+    try {
+      await api("PUT", "events/" + e.id + "/rsvp", { status });
+      e.mine = status;
+      e.rsvps = e.rsvps.filter(r => r.userId !== S.me.id);
+      if (status) e.rsvps.push({ userId: S.me.id, name: S.me.name, status });
+      renderSched();
+    } catch (err) { btn.disabled = false; }
+  }
+  function localParts(iso) { const d = new Date(iso); return [ymd(d), String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0")]; }
+  function renderEvForm() {
+    const box = $("#evFormBox");
+    box.textContent = "";
+    if (!S.evEdit) return;
+    const e = S.evEdit === "new" ? null : S.cEvents.find(x => x.id === S.evEdit);
+    if (S.evEdit !== "new" && !e) { S.evEdit = null; return; }
+    const f = mk("form", "sub ev-form");
+    f.noValidate = true;
+    const rosters = rosterList();
+    f.innerHTML = "<h3>" + (e ? "Edit event" : "New event") + "</h3>" +
+      '<div class="add-grid">' +
+      '<label class="fld"><span class="lbl">Type</span><select name="kind"><option value="match">Match</option><option value="scrim">Scrim</option><option value="film">Film session</option></select></label>' +
+      '<label class="fld"><span class="lbl ev-opp-l">Opponent</span><input type="text" name="opponent" maxlength="60"></label>' +
+      '<label class="fld"><span class="lbl">Day</span><input type="date" name="day"></label>' +
+      '<label class="fld"><span class="lbl">Time</span><input type="time" name="time"></label>' +
+      '<label class="fld"><span class="lbl">Format (optional)</span><input type="text" name="format" maxlength="40" placeholder="Best of 5"></label>' +
+      '<label class="fld"><span class="lbl">Link (optional)</span><input type="url" name="link" maxlength="300" placeholder="Stream, bracket or Discord link"></label></div>' +
+      '<fieldset class="grp"><legend>For</legend><div class="checks ev-teams"></div></fieldset>' +
+      '<label class="fld"><span class="lbl">Details (optional)</span><textarea name="details" rows="2" maxlength="1000" placeholder="Lobby name and password, where to meet, what to bring"></textarea></label>' +
+      '<fieldset class="grp ev-film" hidden><legend>Replay reviews to cover</legend><div class="checks ev-rv"></div></fieldset>' +
+      '<label class="fld ev-res"' + (e && evMs(e) < Date.now() ? "" : " hidden") + '><span class="lbl">Result</span><input type="text" name="result" maxlength="40" placeholder="W 3–1"></label>' +
+      '<p class="status" role="status"></p><div class="row end"><button type="button" class="btn" data-x>Cancel</button><button type="submit" class="btn primary">' + (e ? "Save event" : "Add event") + "</button></div>";
+    const F = n => f.elements.namedItem(n);
+    const tbox = f.querySelector(".ev-teams");
+    for (const r of rosters) {
+      const l = mk("label", "chk"), c = mk("input"); c.type = "checkbox"; c.value = r.id;
+      c.checked = e ? e.teams.includes(r.id) : !r.casual;
+      l.append(c, document.createTextNode(" " + r.name)); tbox.append(l);
+    }
+    const rbox = f.querySelector(".ev-rv");
+    const openRv = S.reviews.filter(r => r.status === "open" || (e && e.reviews.includes(r.id)));
+    for (const r of openRv) {
+      const l = mk("label", "chk"), c = mk("input"); c.type = "checkbox"; c.value = r.id; c.checked = !!(e && e.reviews.includes(r.id));
+      l.append(c, document.createTextNode(" " + (r.name || "Player") + ": " + (r.note.length > 70 ? r.note.slice(0, 69) + "…" : r.note))); rbox.append(l);
+    }
+    if (!openRv.length) rbox.append(mk("p", "fine", "No replay review requests waiting."));
+    const sync = () => {
+      const film = F("kind").value === "film";
+      f.querySelector(".ev-opp-l").textContent = film ? "What you're reviewing" : "Opponent";
+      F("opponent").placeholder = film ? "Thursday's scrim vs Kansas State" : "Team name, or TBD";
+      f.querySelector(".ev-film").hidden = !film;
+    };
+    if (e) {
+      F("kind").value = e.kind; F("opponent").value = e.opponent;
+      const [d, t] = localParts(e.startsAt); F("day").value = d; F("time").value = t;
+      F("format").value = e.format; F("link").value = e.link; F("details").value = e.details; F("result").value = e.result;
+    } else { F("kind").value = "scrim"; F("day").value = S.today; F("time").value = "19:00"; }
+    F("kind").addEventListener("change", sync);
+    sync();
+    f.querySelector("[data-x]").addEventListener("click", () => { S.evEdit = null; renderEvForm(); });
+    f.addEventListener("submit", async ev => {
+      ev.preventDefault();
+      const st = f.querySelector(".status"), day = F("day").value, time = F("time").value;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !/^\d{1,2}:\d{2}$/.test(time)) { setStatus(st, "Pick a day and time.", "err"); return; }
+      const at = parseYmd(day); const [h, m] = time.split(":").map(Number); at.setHours(h, m, 0, 0);
+      const body = {
+        kind: F("kind").value, opponent: F("opponent").value.trim(), startsAt: at.toISOString(), format: F("format").value.trim(),
+        link: F("link").value.trim(), details: F("details").value.trim(), result: F("result").value.trim(),
+        teams: Array.from(tbox.querySelectorAll("input:checked")).map(c => c.value),
+        reviews: F("kind").value === "film" ? Array.from(rbox.querySelectorAll("input:checked")).map(c => c.value) : []
+      };
+      const go = f.querySelector('button[type="submit"]');
+      go.disabled = true;
+      try {
+        const r = e ? await api("PUT", "coach/events/" + e.id, body) : await api("POST", "coach/events", body);
+        const ne = normEvent(r.event);
+        S.cEvents = S.cEvents.filter(x => x.id !== ne.id).concat([ne]);
+        S.evEdit = null;
+        renderEvForm(); renderSchedC();
+        $("#schedListC").querySelector('[data-id="' + ne.id + '"]').scrollIntoView({ block: "nearest" });
+      } catch (err) { go.disabled = false; setStatus(st, err.message, "err"); }
+    });
+    box.append(f);
+    F("opponent").focus();
+  }
+  $("#evNew").addEventListener("click", () => { S.evEdit = S.evEdit === "new" ? null : "new"; renderEvForm(); });
 
   /* ---------- Layout: each person can move sections, make them wide or narrow, and set a height ---------- */
   const LAYOUT_DEF = {
-    player: [["winToday", 0], ["winWeek", 0], ["winRanks", 1], ["winBoard", 1]],
-    coach: [["winRoster", 0], ["winReviews", 0], ["winBoardC", 0], ["winPlayer", 1], ["winSettings", 1]]
+    player: [["winToday", 0], ["winWeek", 0], ["winSched", 1], ["winRanks", 1], ["winBoard", 1]],
+    coach: [["winRoster", 0], ["winReviews", 0], ["winBoardC", 0], ["winPlayer", 1], ["winSchedC", 1], ["winSettings", 1]]
   };
   function layoutFor(view) {
     const def = LAYOUT_DEF[view].map(([id, lane]) => ({ id, lane, wide: false, h: "auto" }));
     const saved = S.me && S.me.prefs.layout[view];
     if (!saved) return def;
     const known = new Set(def.map(d => d.id)), out = saved.filter(x => known.has(x.id)).map(x => Object.assign({}, x));
-    for (const d of def) if (!out.some(x => x.id === d.id)) out.push(d);
+    // Sections added since this person saved their layout go where they'd be by default: before the next one they have.
+    def.forEach((d, i) => {
+      if (out.some(x => x.id === d.id)) return;
+      const next = def.slice(i + 1).find(n => out.some(x => x.id === n.id));
+      const at = next ? out.findIndex(x => x.id === next.id) : out.length;
+      out.splice(at, 0, Object.assign({}, d));
+    });
     return out;
   }
   function applyLayout(view, force) {
@@ -1638,7 +2101,7 @@
     if (Notification.permission === "denied") return "blocked";
     return pushSub && Notification.permission === "granted" ? "on" : "off";
   }
-  const pushWhat = () => S.me && S.me.role === "coach" ? "new replay review requests" : "Coach notes and replay reviews";
+  const pushWhat = () => S.me && S.me.role === "coach" ? "replay review requests" : "Coach notes, replay reviews and schedule changes";
   function renderAppBox() {
     if (!S.me) { renderAppTip(); return; }
     const inst = standalone();
@@ -1733,6 +2196,9 @@
       if (S.view !== "coach") setView("coach");
       loadCoach();
       showWin("#winReviews");
+    } else if (go === "schedule") {
+      const win = S.me.role === "coach" && S.view === "coach" ? "#winSchedC" : "#winSched";
+      if (!$(win).hidden) showWin(win);
     } else if (go === "week") {
       if (S.view !== "player") setView("player");
       const wk = q.get("wk");
@@ -1746,8 +2212,15 @@
   function renderAll() {
     const app = S.phase === "app";
     $("#loadingNote").hidden = S.phase !== "loading";
-    $("#winAuth").hidden = S.phase !== "auth";
+    $("#winAuth").hidden = S.phase !== "auth" || S.missing;
+    $("#winMissing").hidden = !S.missing;
     if (S.phase === "auth") renderAuth();
+    // Sections a coach turned off, and the schedule for players whose roster doesn't see it.
+    $("#winSched").hidden = !feat("schedule") || !S.schedAccess;
+    $("#winSchedC").hidden = !feat("schedule");
+    $("#winReviews").hidden = !feat("reviews");
+    $("#winRanks").hidden = !feat("ranks");
+    $("#winBoard").hidden = $("#winBoardC").hidden = !feat("board");
     const coach = app && S.me.role === "coach";
     if (!coach && S.view === "coach") S.view = "player";
     $("#viewPlayer").hidden = !(app && S.view === "player");
@@ -1759,13 +2232,15 @@
     renderAppBox();
     if (!app) { if (S.layEdit) setLayEdit(false); return; }
     applyLayout(S.view);
-    renderToday(); renderWeek(); renderRanks();
-    if (coach) { renderCoach(); renderSettingsForm(false); }
+    renderToday(); renderWeek(); renderRanks(); renderSched();
+    if (coach) { renderCoach(); renderSchedC(); renderSettingsForm(false); }
   }
 
   /* ---------- Load + refresh ---------- */
   async function loadMine() {
-    const [me, wk, hi, rv] = await Promise.all([api("GET", "me"), api("GET", "weeks"), api("GET", "ranks/history").catch(() => null), api("GET", "reviews").catch(() => null)]);
+    const [me, wk, hi, rv, ev] = await Promise.all([api("GET", "me"), api("GET", "weeks"), api("GET", "ranks/history").catch(() => null), api("GET", "reviews").catch(() => null), feat("schedule") ? api("GET", "events").catch(() => null) : null]);
+    S.schedAccess = !!(ev && ev.access);
+    S.events = ev && ev.events ? ev.events.map(normEvent) : [];
     if (hi) S.myHist = normHist(hi.history);
     if (rv) S.myReviews = (rv.reviews || []).map(normReview);
     const fresh = normUser(me.me);
@@ -1784,8 +2259,16 @@
     renderAll();
     let st;
     try { st = await api("GET", "state"); }
-    catch (err) { S.phase = "auth"; renderAll(); setStatus($("#authStatus"), err.message, "err"); return; }
-    S.needsSetup = !!st.needsSetup;
+    catch (err) {
+      S.phase = "auth";
+      if (err.status === 404) S.missing = true;
+      renderAll();
+      if (!S.missing) setStatus($("#authStatus"), err.message, "err");
+      return;
+    }
+    S.needsSetup = false;
+    S.school = st.school || null;
+    S.paused = !!st.paused;
     S.settings = normSettings(st.settings);
     if (!st.me) { S.phase = "auth"; renderAll(); $("#authName").focus(); return; }
     try { await loadMine(); }
@@ -1796,7 +2279,8 @@
     loadBoard();
     if (S.me.role === "coach") loadCoach();
     syncPush();
-    if (/[?&]go=/.test(location.search)) { const u = location.href; history.replaceState(null, "", "/"); goTo(u); }
+    $("#poweredLink").href = "https://getbackpost.com";
+    if (/[?&]go=/.test(location.search)) { const u = location.href; history.replaceState(null, "", ROUTE.base); goTo(u); }
   }
   let refreshing = false;
   async function refresh() {
