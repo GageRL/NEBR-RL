@@ -387,7 +387,10 @@
   <main class="admin-main">
     <section class="win" id="adminAuth" hidden>
       <div class="tbar"><h2 class="ttl" id="adminAuthT">Admin sign in</h2></div>
+      <div class="wbody" id="adGate" hidden><p id="adGateMsg"></p><div class="row"><a class="btn primary" id="adGateLink" href="/">Sign in</a></div></div>
       <form class="wbody" id="adminAuthForm" novalidate>
+        <p class="fine" id="adSetupNote" hidden></p>
+        <label class="fld" id="adKeyRow" hidden><span class="lbl">Setup key</span><input type="password" id="adKey" maxlength="128" autocomplete="off"></label>
         <label class="fld"><span class="lbl">Name</span><input type="text" id="adName" maxlength="32" autocomplete="username"></label>
         <label class="fld"><span class="lbl">Password</span><input type="password" id="adPw" maxlength="128" autocomplete="current-password"></label>
         <label class="fld" id="adPw2Row" hidden><span class="lbl">Confirm password</span><input type="password" id="adPw2" maxlength="128" autocomplete="new-password"></label>

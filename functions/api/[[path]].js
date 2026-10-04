@@ -993,6 +993,11 @@ async function route(ctx, segs) {
     const rosterIds = st.rosters.map(r => r.id);
     const writeWeek = (uid, wk, d) => db.prepare("INSERT INTO weeks (user_id, school_id, week, data, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, week) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at").bind(uid, school.id, wk, JSON.stringify(d), Date.now());
 
+    // The first Backpost admin account can only be made by a coach of the founding team.
+    if (key === "POST coach/claim-admin" && !c) {
+      if (school.id !== LEGACY_SCHOOL) fail(404, "Not found.");
+      return await createFirstAdmin(db, req, body);
+    }
     if (key === "GET coach/players" && !c) {
       const { results } = await db.prepare("SELECT * FROM users WHERE school_id = ? ORDER BY username COLLATE NOCASE").bind(school.id).all();
       return json({ players: results.map(pub) });
@@ -1256,6 +1261,21 @@ async function startAdminSession(db, req, adminId) {
   ]);
   return setCookie(req, ADMIN_JAR, token, 14 * 86400);
 }
+async function sameSecret(a, b) {
+  const [x, y] = await Promise.all([sha256hex(a), sha256hex(b)]);
+  let d = 0;
+  for (let i = 0; i < x.length; i++) d |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return d === 0;
+}
+async function createFirstAdmin(db, req, body) {
+  const name = cleanName(body.name);
+  if (!name) fail(400, "Enter a name.");
+  const pw = checkNewPw(body.password, 10);
+  const id = newId();
+  const res = await db.prepare("INSERT INTO admins (id, username, pw_hash, created_at) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM admins)").bind(id, name, await makePw(pw), Date.now()).run();
+  if (!res.meta || !res.meta.changes) fail(409, "The admin account already exists.");
+  return json({ me: { id, name } }, 200, { "Set-Cookie": await startAdminSession(db, req, id) });
+}
 function schoolRow(r) {
   return { id: r.id, name: r.name, status: r.status, createdAt: r.created_at, players: r.players || 0, coaches: r.coaches || 0, lastActive: r.last_active || null, invites: r.invites || 0 };
 }
@@ -1267,16 +1287,15 @@ async function adminRoute(ctx, segs) {
 
   if (key === "GET state") {
     const any = await db.prepare("SELECT 1 AS x FROM admins LIMIT 1").first();
-    return json({ needsSetup: !any, me: admin ? { id: admin.id, name: admin.username } : null });
+    const founder = any ? null : await loadSchool(db, LEGACY_SCHOOL);
+    return json({ needsSetup: !any, founder: founder ? { slug: founder.id, name: founder.name } : null, me: admin ? { id: admin.id, name: admin.username } : null });
   }
   if (key === "POST setup") {
-    const name = cleanName(body.name);
-    if (!name) fail(400, "Enter a name.");
-    const pw = checkNewPw(body.password, 10);
-    const id = newId();
-    const res = await db.prepare("INSERT INTO admins (id, username, pw_hash, created_at) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM admins)").bind(id, name, await makePw(pw), Date.now()).run();
-    if (!res.meta || !res.meta.changes) fail(409, "The admin account already exists.");
-    return json({ me: { id, name } }, 200, { "Set-Cookie": await startAdminSession(db, req, id) });
+    // Open first-run setup would let anyone claim the admin account, so it needs the
+    // setup key (fresh installs and tests). On the live site, a founding-team coach uses coach/claim-admin.
+    const want = ctx.env && ctx.env.ADMIN_SETUP_KEY ? String(ctx.env.ADMIN_SETUP_KEY) : "";
+    if (!want || !(await sameSecret(String(body.setupKey || ""), want))) fail(403, "Sign in as a coach of the founding team to set up the admin account.");
+    return await createFirstAdmin(db, req, body);
   }
   if (key === "POST login") {
     const name = cleanName(body.name);

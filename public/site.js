@@ -93,7 +93,7 @@
   if (ROUTE.kind !== "admin") return;
   $("#adminApp").hidden = false;
   document.title = "Admin · Backpost";
-  let needsSetup = false;
+  let needsSetup = false, setupVia = "";
   const fmtDay = ms => ms ? new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "Never";
   const ago = ms => {
     if (!ms) return "No activity yet";
@@ -109,10 +109,29 @@
     let st;
     try { st = await api("GET", "admin/state"); }
     catch (err) { $("#adminAuth").hidden = false; setStatus($("#adStatus"), err.message, "err"); return; }
-    needsSetup = !!st.needsSetup;
+    needsSetup = !!st.needsSetup; setupVia = "";
+    $("#adGate").hidden = true; $("#adminAuthForm").hidden = false; $("#adSetupNote").hidden = true; $("#adKeyRow").hidden = true;
     if (!st.me) {
       $("#adminAuth").hidden = false; $("#adminBody").hidden = true; $("#adminOut").hidden = true; $("#adminWho").textContent = "";
       $("#adminAuthT").textContent = needsSetup ? "Create the admin account" : "Admin sign in";
+      if (needsSetup && st.founder) {
+        // Only a signed-in coach of the founding team can make the first admin account.
+        let me = null;
+        try { me = (await api("GET", "s/" + encodeURIComponent(st.founder.slug) + "/me")).me; } catch (_) {}
+        if (!me || me.role !== "coach") {
+          $("#adminAuthForm").hidden = true; $("#adGate").hidden = false;
+          $("#adGateMsg").textContent = "To create the admin account, first sign in to " + st.founder.name + " as a coach on this site, then come back to this page.";
+          $("#adGateLink").href = "/" + st.founder.slug;
+          $("#adGateLink").textContent = "Sign in to " + st.founder.name;
+          return;
+        }
+        setupVia = "s/" + encodeURIComponent(st.founder.slug) + "/coach/claim-admin";
+        $("#adSetupNote").hidden = false;
+        $("#adSetupNote").textContent = "Signed in as " + me.name + ", coach of " + st.founder.name + ". Choose a name and a new password for the admin account.";
+      } else if (needsSetup) {
+        setupVia = "admin/setup";
+        $("#adKeyRow").hidden = false;
+      }
       $("#adPw2Row").hidden = !needsSetup;
       $("#adPw").autocomplete = needsSetup ? "new-password" : "current-password";
       $("#adGo").textContent = needsSetup ? "Create account" : "Sign in";
@@ -132,7 +151,9 @@
       if (pw !== $("#adPw2").value) { setStatus(st, "The passwords don't match.", "err"); return; }
     }
     $("#adGo").disabled = true;
-    try { await api("POST", needsSetup ? "admin/setup" : "admin/login", { name, password: pw }); $("#adPw").value = ""; $("#adPw2").value = ""; setStatus(st, ""); await boot(); }
+    const body = { name, password: pw };
+    if (setupVia === "admin/setup") body.setupKey = $("#adKey").value;
+    try { await api("POST", needsSetup ? setupVia : "admin/login", body); $("#adPw").value = ""; $("#adPw2").value = ""; $("#adKey").value = ""; setStatus(st, ""); await boot(); }
     catch (err) { setStatus(st, err.message, "err"); }
     finally { $("#adGo").disabled = false; }
   });
