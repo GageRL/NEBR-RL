@@ -31,6 +31,8 @@
   const reflFor = t => REFL_BY_TYPE[t] || REFL_BY_TYPE.ranked;
   const TEAMS = [["varsity", "Varsity"], ["white", "White"], ["black", "Black"], ["casual", "Casual"]];
   const teamName = t => { const x = TEAMS.find(p => p[0] === t); return x ? x[1] : ""; };
+  // Casual players have no set sessions: no weekly requirement, and every finished session simply counts as logged.
+  const freeTeam = t => t === "casual";
 
   /* ---------- Helpers ---------- */
   const $ = s => document.querySelector(s);
@@ -236,26 +238,28 @@
   /* ---------- Week math: finished sessions count toward the weekly requirement ---------- */
   function gamesIn(s) { return PL.reduce((a, p) => a + s.games[p.key].w + s.games[p.key].l, 0); }
   // A finished session counts toward the week once it clears its type's minimum.
-  function counts(s) {
+  function counts(s, team) {
     if (!s.endedAt) return false;
+    if (freeTeam(team)) return true;
     const T = S.settings.targets;
     return s.type === "ranked" ? gamesIn(s) >= T.minGames : s.minutes >= T.minMinutes;
   }
   function shortReason(s) { const T = S.settings.targets; return s.type === "ranked" ? "under " + T.minGames + " games" : "under " + T.minMinutes + " min"; }
-  function weekStats(w) {
+  function weekStats(w, team) {
     const st = { ranked: 0, training: 0, games: blankGames(), hasAny: false };
     for (const s of w ? w.sessions : []) {
       st.hasAny = true;
       if (!s.endedAt) continue;
       for (const p of PL) { st.games[p.key].w += s.games[p.key].w; st.games[p.key].l += s.games[p.key].l; }
-      if (!counts(s)) continue;
+      if (!counts(s, team)) continue;
       if (s.type === "ranked") st.ranked++;
       else if (s.type === "training") st.training++;
     }
     return st;
   }
-  function reqRows(st) {
+  function reqRows(st, team) {
     const T = S.settings.targets, rows = [];
+    if (freeTeam(team)) return rows;
     if (T.ranked > 0) rows.push({ key: "ranked", label: "Ranked Sessions", target: T.ranked, done: st.ranked });
     if (T.training > 0) rows.push({ key: "training", label: "Training", target: T.training, done: st.training });
     return rows;
@@ -462,7 +466,7 @@
     c.querySelector(".sec-focus").hidden = !isTrain;
     const T = S.settings.targets, hint = c.querySelector(".counts-hint");
     const have = isRanked ? (s ? gamesIn(s) : 0) : elapsedMin(a.startedAt), need = isRanked ? T.minGames : T.minMinutes;
-    hint.hidden = need <= 0;
+    hint.hidden = need <= 0 || freeTeam(S.me.team);
     hint.classList.toggle("ok", have >= need);
     hint.textContent = have >= need ? "\u2713 Counts toward the week" : isRanked ? "Counts at " + need + " games \u00b7 " + have + " so far" : "Counts after " + need + " min";
     const rf = reflFor(a.type);
@@ -514,7 +518,7 @@
     const sum = sessionSummary(s), sumEl = c.querySelector(".csum");
     sumEl.textContent = sum;
     sumEl.hidden = !sum;
-    c.querySelector(".nc").textContent = counts(s) ? "" : "Doesn't count: " + shortReason(s);
+    c.querySelector(".nc").textContent = counts(s, S.me.team) ? "" : "Doesn't count: " + shortReason(s);
     fillReadOnly(c.querySelector(".ro"), s);
   }
   function renderToday() {
@@ -632,7 +636,7 @@
     const wk = S.wk, thisWk = mondayOf(S.today);
     $("#wkLabel").textContent = weekLabel(wk);
     $("#wkThis").hidden = wk === thisWk;
-    const w = getWeek(wk), rows = reqRows(weekStats(w));
+    const w = getWeek(wk), rows = reqRows(weekStats(w, S.me.team), S.me.team);
     renderReqs($("#reqBox"), rows);
     const v = $("#verdict"), left = remaining(rows);
     if (rows.length && !left) { v.textContent = "\u2713 Week complete"; v.className = "verdict good"; }
@@ -646,7 +650,7 @@
       const day = mk("div", "wl-day" + (d === S.today ? " is-today" : ""));
       day.append(mk("p", "wl-date", fmtDate(d, { weekday: "short", month: "short", day: "numeric" })));
       for (const s of ses) {
-        const ok = counts(s);
+        const ok = counts(s, S.me.team);
         const line = mk("div", "wl-line" + (s.endedAt ? (ok ? "" : " nc") : " live"));
         line.append(mk("span", "", (s.endedAt ? (ok ? "\u2713 " : "\u2013 ") : "\u25cf ") + TYPES[s.type].label + " \u00b7 " + (s.endedAt ? fmtDur(s.minutes) : "now")));
         const sum = s.endedAt ? sessionSummary(s) : "";
@@ -797,10 +801,12 @@
     // Every player, plus the coach only in weeks the coach logged something.
     return Object.keys(S.roster).filter(id => S.roster[id].role === "player" || (!!S.rosterWeeks[id] && S.rosterWeeks[id].sessions.length > 0));
   }
-  // Status for the viewed week. Same requirement for everyone.
+  // Status for the viewed week. Same requirement for everyone except Casual players, who have none.
   function playerStatus(id) {
     const p = S.roster[id], w = S.rosterWeeks[id] || normWeek(null, S.coachWk), wk = S.coachWk, thisWk = mondayOf(S.today);
-    const st = weekStats(w), rows = reqRows(st), left = remaining(rows);
+    const st = weekStats(w, p.team), rows = reqRows(st, p.team), left = remaining(rows);
+    const isNew = p.createdAt && ymd(new Date(p.createdAt)) > addDays(wk, 6);
+    if (freeTeam(p.team)) return { g: p.active && wk === thisWk ? "live" : isNew ? "notyet" : "free", left: 0, st };
     let g = "open";
     if (p.active && wk === thisWk) g = "live";
     else if (rows.length && !left) g = "done";
@@ -808,12 +814,13 @@
     else if (wk < thisWk) g = "missed";
     return { g, left, st };
   }
-  const STATUS_RANK = { live: 0, open: 1, missed: 1, done: 2, notyet: 3 };
+  const STATUS_RANK = { live: 0, open: 1, missed: 1, done: 2, free: 2, notyet: 3 };
   function statusLabel(x) {
     if (x.g === "live") return "In session";
     if (x.g === "done") return "Done";
     if (x.g === "missed") return "Missed";
     if (x.g === "notyet") return "New";
+    if (x.g === "free") { const n = x.st.ranked + x.st.training; return n + (n === 1 ? " session" : " sessions"); }
     return x.left + " left";
   }
 
@@ -846,7 +853,8 @@
       if (p.team) nm.append(mk("span", "bteam", teamName(p.team)));
       const pill = mk("span", "pill " + x.g, statusLabel(x));
       if (x.g === "live") pill.title = TYPES[p.active.type].label + " \u00b7 " + fmtDur(elapsedMin(p.active.startedAt));
-      b.append(nm, cell(x.st.ranked, T.ranked), cell(x.st.training, T.training), pill);
+      const free = freeTeam(p.team);
+      b.append(nm, cell(x.st.ranked, free ? 0 : T.ranked), cell(x.st.training, free ? 0 : T.training), pill);
       b.addEventListener("click", () => { S.sel = x.id; renderCoach(); loadHist(x.id); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
       box.append(b);
     }
@@ -878,14 +886,14 @@
     stats.textContent = "";
     if (p.active && S.coachWk === mondayOf(S.today)) stats.append(mk("p", "status err", "● " + TYPES[p.active.type].label + " · since " + fmtClock(p.active.startedAt)));
     const w = S.rosterWeeks[id] || normWeek(null, S.coachWk);
-    const st = weekStats(w);
+    const st = weekStats(w, p.team);
     const ranks = mk("ul", "rank-list");
     rankRows(ranks, p.ranks, S.hist[id] || []);
     stats.append(ranks);
     const stamp = rankStamp(p.ranks);
     if (stamp) stats.append(mk("p", "fine", stamp));
     if (!p.trackerUrl) stats.append(mk("p", "fine", "No tracker link"));
-    const rows = reqRows(st);
+    const rows = reqRows(st, p.team);
     const reqs = mk("div", "reqs");
     renderReqs(reqs, rows);
     stats.append(reqs);
@@ -895,7 +903,7 @@
       const dayBox = mk("div", "pd-day");
       dayBox.append(mk("h4", "", fmtDate(d, { weekday: "long", month: "short", day: "numeric" })));
       for (const s of ses) {
-        const ok = counts(s);
+        const ok = counts(s, p.team);
         const sb = mk("div", "pd-sess" + (s.endedAt ? (ok ? "" : " nc") : " live"));
         sb.append(mk("p", "pd-line", (s.endedAt ? (ok ? "✓ " : "– ") : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") + (s.coachEditedAt ? " · coach edited" : "") : "since " + fmtClock(s.startedAt))));
         if (s.endedAt && S.editOpen === s.id) {
