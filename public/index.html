@@ -29,6 +29,11 @@
 <div class="swoosh" aria-hidden="true"></div>
 
 <main class="desk">
+  <!-- Layout editing bar: shown while someone rearranges their page -->
+  <div class="lay-bar" id="layBar" hidden>
+    <p><span class="lay-desk">Drag a section by its handle, or use the arrows. Set each section's width and height.</span><span class="lay-phone">Use the arrows to move a section. Set each section's height.</span></p>
+    <div class="row"><button type="button" class="btn sm" id="layReset">Reset layout</button><button type="button" class="btn sm primary" id="layDone">Done</button></div>
+  </div>
   <!-- Sign on / first-time setup -->
   <section class="win signon" id="winAuth" aria-labelledby="tAuth" hidden>
     <div class="tbar"><h2 class="ttl" id="tAuth">Sign in</h2></div>
@@ -121,6 +126,11 @@
             <div class="roster" id="rosterList"></div>
             <p class="empty" id="rosterEmpty">No players yet.</p>
           </div>
+        </section>
+
+        <section class="win" id="winReviews" aria-labelledby="tReviews">
+          <div class="tbar"><h2 class="ttl" id="tReviews">Replay reviews</h2></div>
+          <div class="wbody"><div class="rv-inbox" id="reviewList"></div></div>
         </section>
 
         <section class="win" id="winBoardC" aria-labelledby="tBoardC">

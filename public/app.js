@@ -128,7 +128,15 @@
     return out;
   }
   function normUser(u) {
-    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: TEAMS.some(t => t[0] === u.team) ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), createdAt: Number(u.createdAt) || 0 };
+    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: TEAMS.some(t => t[0] === u.team) ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0 };
+  }
+  function normPrefs(p) {
+    const out = { layout: {} }, lay = isPlain(p) && isPlain(p.layout) ? p.layout : {};
+    for (const v of ["player", "coach"]) if (Array.isArray(lay[v])) out.layout[v] = lay[v].filter(x => isPlain(x) && typeof x.id === "string").map(x => ({ id: x.id, lane: x.lane === 1 ? 1 : 0, wide: !!x.wide, h: ["auto", "s", "m", "l"].includes(x.h) ? x.h : "auto" }));
+    return out;
+  }
+  function normReview(r) {
+    return { id: String(r.id), userId: String(r.userId || ""), name: str(r.name, 32), week: str(r.week, 10), sessionId: str(r.sessionId, 40), playlist: str(r.playlist, 10), link: /^https?:\/\//i.test(r.link || "") ? str(r.link, 300) : "", note: str(r.note, 1000), status: r.status === "done" ? "done" : "open", createdAt: Number(r.createdAt) || 0 };
   }
   function normSession(s) {
     const g = blankGames();
@@ -157,7 +165,7 @@
     settings: normSettings(null), me: null, weeks: {},
     view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
-    removals: {}, myHist: [], hist: {}, pweeks: {}, noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
+    removals: {}, myHist: [], hist: {}, pweeks: {}, myReviews: [], reviews: [], layEdit: false, layApplied: {}, noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
     undo: [], saveErr: null, settingsDirty: false, board: null
   };
 
@@ -170,7 +178,7 @@
     renderConn();
   }
   async function runOp(key) {
-    if (key === "me") return api("PATCH", "me", { active: S.me.active, customFocus: S.me.customFocus });
+    if (key === "me") return api("PATCH", "me", { active: S.me.active, customFocus: S.me.customFocus, prefs: S.me.prefs });
     if (key.startsWith("w:")) {
       const wk = key.slice(2);
       const rm = Array.from(S.removals[wk] || []);
@@ -328,9 +336,20 @@
       add("My Training", "view", S.view === "player", () => setView("player"));
       box.append(mk("span", "tsep"));
     }
-    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Player", "#winPlayer"], ["Board", "#winBoardC"], ["Settings", "#winSettings"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Ranks", "#winRanks"], ["Board", "#winBoard"]];
+    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Reviews", "#winReviews"], ["Player", "#winPlayer"], ["Board", "#winBoardC"], ["Settings", "#winSettings"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Ranks", "#winRanks"], ["Board", "#winBoard"]];
     for (const [label, sel] of secs) add(label, "sec", null, () => showWin(sel));
+    rvBadge();
+    add("Layout", "sec lay", S.layEdit, () => setLayEdit(!S.layEdit));
     add(S.me.name || "Account", "acct", null, openAccount);
+  }
+
+  // Number of replay reviews waiting, on the Reviews tab (updated in place so focus stays put).
+  function rvBadge() {
+    const b = Array.from(document.querySelectorAll("#taskBtns .task.sec")).find(x => x.textContent === "Reviews");
+    if (!b) return;
+    const n = S.reviews.filter(r => r.status === "open").length;
+    if (n) { b.dataset.count = String(n); b.setAttribute("aria-label", "Reviews, " + n + " waiting"); }
+    else { delete b.dataset.count; b.removeAttribute("aria-label"); }
   }
 
   /* ---------- Auth ---------- */
@@ -363,7 +382,7 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.needsSetup = false;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.layEdit = false; S.layApplied = {}; S.needsSetup = false;
     setStatus($("#authStatus"), "Signed out. Sign in again.", "err");
     renderAll();
   }
@@ -470,6 +489,13 @@
       '<form class="addf" data-form="addfocus"><input type="text" maxlength="30" placeholder="Add" aria-label="Add a focus area"><button type="submit" class="btn sm">+</button></form></div>' +
       '<label class="fld"><span class="lbl lbl-did">Notes</span><textarea rows="2" data-sfield="did"></textarea></label>' +
       '<div class="refl">' + REFL.map(([k]) => '<label class="fld"><span class="lbl rq" data-k="' + k + '"></span><textarea rows="2" data-sfield="' + k + '"></textarea></label>').join("") + '</div>' +
+      '<div class="rv sec-ranked"><div class="rv-list"></div>' +
+      '<button type="button" class="linkbtn rv-open" data-act="rv-open">Request a replay review</button>' +
+      '<form class="sub rv-form" data-form="review" novalidate hidden><h3>Replay review</h3><div class="add-grid">' +
+      '<label class="fld"><span class="lbl">Playlist</span><select name="rv-pl"><option value="">Any</option>' + PL.map(q => '<option value="' + q.key + '">' + q.name + "</option>").join("") + "</select></label>" +
+      '<label class="fld"><span class="lbl">Replay link (optional)</span><input type="url" name="rv-link" maxlength="300" placeholder="ballchasing.com/replay/…"></label></div>' +
+      '<label class="fld"><span class="lbl">What should Coach look at?</span><textarea name="rv-note" rows="2" maxlength="1000"></textarea></label>' +
+      '<p class="status" role="status"></p><div class="row end"><button type="button" class="btn" data-act="rv-cancel">Cancel</button><button type="submit" class="btn primary">Send request</button></div></form></div>' +
       '<p class="fine">Sessions lock at check out.</p>' +
       '<div class="card-actions"><button type="button" class="btn primary" data-act="checkout">Check out</button></div>';
     buildCounters(c.querySelector(".ctrs"));
@@ -503,6 +529,16 @@
       for (const [k] of REFL) setVal(c.querySelector('[data-sfield="' + k + '"]'), s[k]);
     }
     c.querySelector('[data-act="undo"]').disabled = !S.undo.some(u => u.sid === a.id);
+    const rl = c.querySelector(".rv-list"), mine = S.myReviews.filter(r => r.sessionId === a.id);
+    rl.textContent = "";
+    for (const r of mine) rl.append(reviewLine(r));
+    rl.hidden = !mine.length;
+  }
+  const plName = k => { const q = PL.find(x => x.key === k); return q ? q.name : ""; };
+  function reviewLine(r) {
+    const p = mk("p", "rv-item");
+    p.append(mk("b", "", r.status === "done" ? "\u2713 Replay reviewed" : "Replay review requested"), document.createTextNode(" " + [plName(r.playlist), r.status === "done" ? "" : "waiting for Coach"].filter(Boolean).join(", ")));
+    return p;
   }
   function makeDoneCard() {
     const c = mk("div", "card");
@@ -591,6 +627,13 @@
     if (act === "checkin") { checkIn(b.dataset.type); return; }
     if (act === "checkout") { checkOut(null); return; }
     if (act === "checkout-set") { const v = n0(b.closest(".warnbox").querySelector(".lw-min").value); if (v > 0) checkOut(v); return; }
+    if (act === "rv-open" || act === "rv-cancel") {
+      const card = b.closest(".card"), f = card.querySelector(".rv-form");
+      f.hidden = act === "rv-cancel";
+      card.querySelector(".rv-open").hidden = !f.hidden;
+      if (!f.hidden) f.querySelector("textarea").focus();
+      return;
+    }
     const ctx = cardCtx(b);
     if (!ctx) return;
     if (act === "game") {
@@ -638,8 +681,28 @@
     const v = e.target.checked;
     mutateSession(ctx.wk, ctx.sid, s => { if (!s.endedAt) s.warmup = v; }, 0);
   });
+  async function sendReview(f) {
+    const ctx = cardCtx(f), st = f.querySelector(".status"), go = f.querySelector('button[type="submit"]');
+    const note = f.elements.namedItem("rv-note").value.trim();
+    if (!ctx) return;
+    if (!note) { setStatus(st, "Say what Coach should look at.", "err"); return; }
+    go.disabled = true;
+    // The session has to be saved before Coach can get a request for it.
+    const key = "w:" + ctx.wk;
+    if (timers[key]) { clearTimeout(timers[key]); delete timers[key]; flush(key); }
+    for (let i = 0; i < 40 && (inflight.has(key) || again.has(key)); i++) await sleep(150);
+    try {
+      const r = await api("POST", "reviews", { week: ctx.wk, sessionId: ctx.sid, playlist: f.elements.namedItem("rv-pl").value, link: f.elements.namedItem("rv-link").value, note });
+      S.myReviews.unshift(normReview(r.review));
+      f.reset(); f.hidden = true; setStatus(st, "");
+      f.closest(".card").querySelector(".rv-open").hidden = false;
+      renderToday(); renderWeek();
+    } catch (err) { setStatus(st, err.message, "err"); }
+    finally { go.disabled = false; }
+  }
   todayBody.addEventListener("submit", e => {
     e.preventDefault();
+    if (e.target.dataset.form === "review") { sendReview(e.target); return; }
     if (e.target.dataset.form === "addfocus") {
       const input = e.target.querySelector("input");
       const raw = input.value.trim().replace(/\s+/g, " ").slice(0, 30);
@@ -701,6 +764,8 @@
         const parts = s.endedAt ? sessionParts(s) : [];
         if (parts.length) line.append(fillParts(mk("span", "wl-sum"), parts));
         if (s.endedAt && !ok) line.append(mk("span", "wl-nc", "doesn't count (" + shortReason(s, S.me) + ")"));
+        const rvs = S.myReviews.filter(r => r.sessionId === s.id);
+        if (rvs.length) line.append(mk("span", "rv-tag", rvs.every(r => r.status === "done") ? "\u2713 Replay reviewed" : "Replay review requested"));
         if (s.endedAt) {
           const rb = mk("button", "linkbtn rm", "Remove");
           rb.type = "button";
@@ -824,7 +889,8 @@
     coachLoading = true;
     const wk = S.coachWk;
     try {
-      const [p, w] = await Promise.all([api("GET", "coach/players"), api("GET", "coach/weeks/" + wk)]);
+      const [p, w, rv] = await Promise.all([api("GET", "coach/players"), api("GET", "coach/weeks/" + wk), api("GET", "coach/reviews").catch(() => null)]);
+      if (rv) S.reviews = (rv.reviews || []).map(normReview);
       S.roster = {};
       for (const u of p.players || []) { const n = normUser(u); S.roster[n.id] = n; }
       if (wk === S.coachWk) {
@@ -912,6 +978,46 @@
       box.append(b);
     }
     renderPlayerDetail();
+    renderReviews();
+  }
+
+  /* ---------- Coach: replay review requests ---------- */
+  function renderReviews() {
+    const box = $("#reviewList");
+    if (!box) return;
+    box.textContent = "";
+    const open = S.reviews.filter(r => r.status === "open"), done = S.reviews.filter(r => r.status === "done").slice(0, 5);
+    rvBadge();
+    if (!open.length) box.append(mk("p", "empty", "No requests waiting."));
+    const card = r => {
+      const c = mk("div", "rv-card" + (r.status === "done" ? " done" : ""));
+      const head = mk("p", "rv-head");
+      head.append(mk("b", "", r.name || "Player"), mk("span", "", fmtStamp(new Date(r.createdAt).toISOString())));
+      if (r.playlist) head.append(mk("span", "", plName(r.playlist)));
+      c.append(head, mk("p", "rv-note", r.note));
+      const row = mk("div", "row");
+      if (r.link) { const a = mk("a", "linkbtn", "Open replay"); a.href = r.link; a.target = "_blank"; a.rel = "noopener noreferrer"; row.append(a); }
+      const go = mk("button", "linkbtn", "Open session"); go.type = "button";
+      go.addEventListener("click", () => {
+        S.sel = r.userId;
+        if (r.week !== S.coachWk) coachWeek(r.week); else renderCoach();
+        loadHist(r.userId); loadPast(r.userId);
+        showWin("#winPlayer");
+      });
+      row.append(go);
+      const mark = mk("button", "btn sm" + (r.status === "open" ? " primary push" : " push"), r.status === "open" ? "Mark reviewed" : "Reopen"); mark.type = "button";
+      mark.addEventListener("click", async () => {
+        mark.disabled = true;
+        const status = r.status === "open" ? "done" : "open";
+        try { await api("PATCH", "coach/reviews/" + r.id, { status }); r.status = status; renderReviews(); }
+        catch (err) { mark.disabled = false; }
+      });
+      row.append(mark);
+      c.append(row);
+      return c;
+    };
+    open.forEach(r => box.append(card(r)));
+    if (done.length) { box.append(mk("p", "rv-done-h", "Reviewed")); done.forEach(r => box.append(card(r))); }
   }
 
   function renderPlayerDetail() {
@@ -1338,6 +1444,164 @@
     } catch (err) { setStatus($("#setStatus"), err.message, "err"); }
   });
 
+  /* ---------- Layout: each person can move sections, make them wide or narrow, and set a height ---------- */
+  const LAYOUT_DEF = {
+    player: [["winToday", 0], ["winWeek", 0], ["winRanks", 1], ["winBoard", 1]],
+    coach: [["winRoster", 0], ["winReviews", 0], ["winBoardC", 0], ["winPlayer", 1], ["winSettings", 1]]
+  };
+  function layoutFor(view) {
+    const def = LAYOUT_DEF[view].map(([id, lane]) => ({ id, lane, wide: false, h: "auto" }));
+    const saved = S.me && S.me.prefs.layout[view];
+    if (!saved) return def;
+    const known = new Set(def.map(d => d.id)), out = saved.filter(x => known.has(x.id)).map(x => Object.assign({}, x));
+    for (const d of def) if (!out.some(x => x.id === d.id)) out.push(d);
+    return out;
+  }
+  function applyLayout(view, force) {
+    const items = layoutFor(view), key = JSON.stringify(items);
+    if (!force && S.layApplied[view] === key) return;
+    S.layApplied[view] = key;
+    const root = document.querySelector((view === "coach" ? "#viewCoach" : "#viewPlayer") + " .cols");
+    const els = {};
+    for (const it of items) els[it.id] = document.getElementById(it.id);
+    // Keep focus and scroll in place while sections move.
+    const fe = document.activeElement, y = window.scrollY;
+    root.textContent = "";
+    let band = null;
+    items.forEach((it, i) => {
+      const el = els[it.id];
+      if (!el) return;
+      el.dataset.h = it.h;
+      el.dataset.lane = String(it.lane);
+      if (it.wide) { const b = mk("div", "band wide"); b.append(el); root.append(b); band = null; return; }
+      if (!band) { band = mk("div", "band"); band.append(mk("div", "col"), mk("div", "col")); band.children[0].dataset.lane = "0"; band.children[1].dataset.lane = "1"; root.append(band); }
+      band.children[it.lane].append(el);
+    });
+    syncLayTools(view, items);
+    if (fe && fe.isConnected && fe !== document.activeElement) { try { fe.focus({ preventScroll: true }); } catch (_) {} }
+    window.scrollTo(0, y);
+  }
+  function saveLayout(view, items) {
+    S.me.prefs.layout[view] = items.map(x => ({ id: x.id, lane: x.lane, wide: x.wide, h: x.h }));
+    queue("me", 400);
+    applyLayout(view, true);
+  }
+  function layTools(win) {
+    let t = win.querySelector(".lay-tools");
+    if (t) return t;
+    t = mk("span", "lay-tools");
+    t.innerHTML = '<button type="button" class="lay-drag" draggable="true" aria-label="Drag to move" title="Drag to move">\u2807</button>' +
+      '<button type="button" data-lay="up" aria-label="Move up">\u2191</button><button type="button" data-lay="down" aria-label="Move down">\u2193</button>' +
+      '<button type="button" data-lay="left" aria-label="Move to left column">\u2190</button><button type="button" data-lay="right" aria-label="Move to right column">\u2192</button>' +
+      '<button type="button" data-lay="wide"></button>' +
+      '<select data-lay="h" aria-label="Height"><option value="auto">Auto height</option><option value="s">Short</option><option value="m">Medium</option><option value="l">Tall</option></select>';
+    const tb = win.querySelector(".tbar"), tm = tb.querySelector(".tmin");
+    tb.insertBefore(t, tm || null);
+    return t;
+  }
+  function syncLayTools(view, items) {
+    for (const it of items) {
+      const el = document.getElementById(it.id);
+      if (!el) continue;
+      const t = layTools(el);
+      t.querySelector('[data-lay="wide"]').textContent = it.wide ? "Narrow" : "Wide";
+      t.querySelector('[data-lay="wide"]').setAttribute("aria-label", it.wide ? "Make narrow" : "Make wide");
+      t.querySelector('[data-lay="left"]').hidden = it.wide || it.lane === 0;
+      t.querySelector('[data-lay="right"]').hidden = it.wide || it.lane === 1;
+      const sel = t.querySelector('[data-lay="h"]');
+      if (document.activeElement !== sel) sel.value = it.h;
+    }
+  }
+  function moveSection(view, id, dir) {
+    const items = layoutFor(view), i = items.findIndex(x => x.id === id);
+    if (i < 0) return;
+    const it = items[i];
+    if ((dir === "up" || dir === "down") && matchMedia("(max-width: 979px)").matches) {
+      // One column (phones): move past the section just above or below on screen.
+      const seen = Array.from(document.querySelectorAll((view === "coach" ? "#viewCoach" : "#viewPlayer") + " .cols .win")).map(w => w.id);
+      const at = seen.indexOf(id), nb = seen[dir === "up" ? at - 1 : at + 1];
+      if (!nb) return;
+      items.splice(i, 1);
+      const j = items.findIndex(x => x.id === nb), other = items[j];
+      it.wide = false;
+      it.lane = other.wide ? (dir === "up" ? 1 : 0) : other.lane;
+      items.splice(dir === "up" ? j : j + 1, 0, it);
+      saveLayout(view, items);
+      return;
+    }
+    // Up and down skip sections in the other column, so a move always changes what you see.
+    const same = x => x.wide || it.wide || x.lane === it.lane;
+    if (dir === "left" || dir === "right") it.lane = dir === "left" ? 0 : 1;
+    else if (dir === "up") { let j = i - 1; while (j >= 0 && !same(items[j])) j--; if (j < 0) return; items.splice(i, 1); items.splice(j, 0, it); }
+    else if (dir === "down") { let j = i + 1; while (j < items.length && !same(items[j])) j++; if (j >= items.length) return; items.splice(i, 1); items.splice(j, 0, it); }
+    else if (dir === "wide") it.wide = !it.wide;
+    saveLayout(view, items);
+  }
+  function setLayEdit(on) {
+    S.layEdit = on;
+    document.body.classList.toggle("lay-on", on);
+    $("#layBar").hidden = !on;
+    document.querySelectorAll(".view .win").forEach(w => layTools(w));
+    renderTaskbar();
+    if (on) $("#layBar").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "nearest" });
+  }
+  $("#layDone").addEventListener("click", () => setLayEdit(false));
+  $("#layReset").addEventListener("click", () => { delete S.me.prefs.layout[S.view]; queue("me", 0); applyLayout(S.view, true); });
+  document.addEventListener("click", e => {
+    const b = e.target.closest("[data-lay]");
+    if (!b || b.tagName === "SELECT" || !S.layEdit) return;
+    moveSection(S.view, b.closest(".win").id, b.dataset.lay);
+  });
+  document.addEventListener("change", e => {
+    const sel = e.target.closest('select[data-lay="h"]');
+    if (!sel) return;
+    const items = layoutFor(S.view), it = items.find(x => x.id === sel.closest(".win").id);
+    if (it) { it.h = sel.value; saveLayout(S.view, items); }
+  });
+  // Drag and drop (mouse): drop on a section to go before it in its column; drop on empty column space to go to the end of that column.
+  let dragId = null;
+  document.addEventListener("dragstart", e => {
+    const h = e.target.closest && e.target.closest(".lay-drag");
+    if (!h || !S.layEdit) return;
+    dragId = h.closest(".win").id;
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", dragId); } catch (_) {}
+  });
+  document.addEventListener("dragover", e => {
+    if (!dragId) return;
+    const t = e.target.closest && (e.target.closest(".view .win") || e.target.closest(".view .col"));
+    if (!t) return;
+    e.preventDefault();
+    document.querySelectorAll(".drag-over").forEach(x => x.classList.remove("drag-over"));
+    t.classList.add("drag-over");
+  });
+  document.addEventListener("drop", e => {
+    if (!dragId) return;
+    const t = e.target.closest && (e.target.closest(".view .win") || e.target.closest(".view .col"));
+    document.querySelectorAll(".drag-over").forEach(x => x.classList.remove("drag-over"));
+    if (!t) { dragId = null; return; }
+    e.preventDefault();
+    const items = layoutFor(S.view), from = items.findIndex(x => x.id === dragId), it = items[from];
+    if (from < 0 || t.id === dragId) { dragId = null; return; }
+    items.splice(from, 1);
+    if (t.classList.contains("win")) {
+      const to = items.findIndex(x => x.id === t.id);
+      if (!items[to].wide) it.lane = items[to].lane;
+      items.splice(to, 0, it);
+    } else {
+      // End of a column: after the last section in that band's column, or after the band's last section.
+      const lane = Number(t.dataset.lane) || 0, ids = Array.from(t.parentElement.querySelectorAll(".win")).map(w => w.id).filter(id => id !== dragId);
+      const inLane = Array.from(t.querySelectorAll(".win")).map(w => w.id).filter(id => id !== dragId);
+      const anchor = inLane.length ? inLane[inLane.length - 1] : ids[ids.length - 1];
+      const at = anchor ? items.findIndex(x => x.id === anchor) + 1 : items.length;
+      it.lane = lane; it.wide = false;
+      items.splice(at, 0, it);
+    }
+    dragId = null;
+    saveLayout(S.view, items);
+  });
+  document.addEventListener("dragend", () => { dragId = null; document.querySelectorAll(".drag-over").forEach(x => x.classList.remove("drag-over")); });
+
   /* ---------- Render all ---------- */
   function renderAll() {
     const app = S.phase === "app";
@@ -1352,17 +1616,19 @@
     renderHeader();
     renderConn();
     renderTaskbar();
-    if (!app) return;
+    if (!app) { if (S.layEdit) setLayEdit(false); return; }
+    applyLayout(S.view);
     renderToday(); renderWeek(); renderRanks();
     if (coach) { renderCoach(); renderSettingsForm(false); }
   }
 
   /* ---------- Load + refresh ---------- */
   async function loadMine() {
-    const [me, wk, hi] = await Promise.all([api("GET", "me"), api("GET", "weeks"), api("GET", "ranks/history").catch(() => null)]);
+    const [me, wk, hi, rv] = await Promise.all([api("GET", "me"), api("GET", "weeks"), api("GET", "ranks/history").catch(() => null), api("GET", "reviews").catch(() => null)]);
     if (hi) S.myHist = normHist(hi.history);
+    if (rv) S.myReviews = (rv.reviews || []).map(normReview);
     const fresh = normUser(me.me);
-    if (dirty.has("me") && S.me) { fresh.active = S.me.active; fresh.customFocus = S.me.customFocus; }
+    if (dirty.has("me") && S.me) { fresh.active = S.me.active; fresh.customFocus = S.me.customFocus; fresh.prefs = S.me.prefs; }
     S.me = fresh;
     const next = {};
     for (const x of wk.weeks || []) {
