@@ -36,6 +36,7 @@ const SCHEMA = [
      active TEXT,
      custom_focus TEXT,
      targets TEXT,
+     prefs TEXT,
      fail_count INTEGER NOT NULL DEFAULT 0,
      locked_until INTEGER NOT NULL DEFAULT 0,
      created_at INTEGER NOT NULL
@@ -65,7 +66,20 @@ const SCHEMA = [
      doubles INTEGER,
      standard INTEGER
    )`,
-  `CREATE INDEX IF NOT EXISTS rank_history_user ON rank_history(user_id, at)`
+  `CREATE INDEX IF NOT EXISTS rank_history_user ON rank_history(user_id, at)`,
+  `CREATE TABLE IF NOT EXISTS reviews (
+     id TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL,
+     week TEXT NOT NULL,
+     session_id TEXT NOT NULL,
+     playlist TEXT,
+     link TEXT,
+     note TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'open',
+     created_at INTEGER NOT NULL,
+     done_at INTEGER
+   )`,
+  `CREATE INDEX IF NOT EXISTS reviews_user ON reviews(user_id, created_at)`
 ];
 const HISTORY_DAYS = 120;
 let schemaReady = false;
@@ -255,6 +269,22 @@ function normFocus(list) {
   for (const f of list) { const s = cleanName(f).slice(0, 30); if (s && !out.some(o => o.toLowerCase() === s.toLowerCase())) out.push(s); }
   return out.slice(0, 30);
 }
+/* Per-person page layout: for each view, the sections in order with column, width and height. */
+const LAYOUT_H = ["auto", "s", "m", "l"];
+function normPrefs(raw) {
+  const out = { layout: {} };
+  const lay = isPlain(raw) && isPlain(raw.layout) ? raw.layout : {};
+  for (const view of ["player", "coach"]) {
+    if (!Array.isArray(lay[view])) continue;
+    out.layout[view] = lay[view].filter(x => isPlain(x) && /^win[A-Za-z]{2,20}$/.test(x.id)).slice(0, 12)
+      .map(x => ({ id: x.id, lane: x.lane === 1 ? 1 : 0, wide: !!x.wide, h: LAYOUT_H.includes(x.h) ? x.h : "auto" }));
+  }
+  return out;
+}
+const REVIEW_PL = ["", "duel", "doubles", "standard"];
+function pubReview(r) {
+  return { id: r.id, userId: r.user_id, name: r.username || undefined, week: r.week, sessionId: r.session_id, playlist: r.playlist || "", link: r.link || "", note: r.note, status: r.status, createdAt: r.created_at, doneAt: r.done_at || null };
+}
 function pub(u) {
   return {
     id: u.id, name: u.username, role: u.role,
@@ -264,6 +294,7 @@ function pub(u) {
     active: parse(u.active, null),
     customFocus: parse(u.custom_focus, []),
     targetsLog: normPlayerLog(parse(u.targets, [])),
+    prefs: normPrefs(parse(u.prefs, {})),
     createdAt: u.created_at
   };
 }
@@ -408,6 +439,7 @@ export async function onRequest({ request, env, params }) {
       const cols = await db.prepare("PRAGMA table_info(users)").all();
       if (!(cols.results || []).some(c => c.name === "team")) await db.prepare("ALTER TABLE users ADD COLUMN team TEXT").run();
       if (!(cols.results || []).some(c => c.name === "targets")) await db.prepare("ALTER TABLE users ADD COLUMN targets TEXT").run();
+      if (!(cols.results || []).some(c => c.name === "prefs")) await db.prepare("ALTER TABLE users ADD COLUMN prefs TEXT").run();
       await db.prepare("UPDATE users SET team = 'varsity' WHERE role = 'player' AND (team IS NULL OR team NOT IN (" + TEAMS.map(t => "'" + t + "'").join(", ") + "))").run();
       schemaReady = true;
     }
@@ -478,9 +510,40 @@ async function route(db, req, method, segs, body, user) {
     const sets = [], vals = [];
     if ("active" in body) { sets.push("active = ?"); vals.push(JSON.stringify(normActive(body.active))); }
     if ("customFocus" in body) { sets.push("custom_focus = ?"); vals.push(JSON.stringify(normFocus(body.customFocus))); }
+    if ("prefs" in body) { sets.push("prefs = ?"); vals.push(JSON.stringify(normPrefs(body.prefs))); }
     if (sets.length) await db.prepare("UPDATE users SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, user.id).run();
     const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(user.id).first();
     return json({ me: pub(u) });
+  }
+  /* Replay review requests: a player asks the coach to look at a Ranked Session. */
+  if (key === "GET reviews") {
+    const { results } = await db.prepare("SELECT * FROM reviews WHERE user_id = ? ORDER BY created_at DESC LIMIT 100").bind(user.id).all();
+    return json({ reviews: results.map(pubReview) });
+  }
+  if (key === "POST reviews") {
+    const wk = weekId(body.week), sid = String(body.sessionId || "");
+    const row = await db.prepare("SELECT data FROM weeks WHERE user_id = ? AND week = ?").bind(user.id, wk).first();
+    const ses = (row ? parse(row.data, {}).sessions || [] : []).find(x => isPlain(x) && x.id === sid);
+    if (!ses) fail(404, "That session isn't saved yet. Try again in a moment.");
+    if (ses.type !== "ranked") fail(400, "Replay reviews are for Ranked Sessions.");
+    const note = cleanText(body.note, 1000).trim();
+    if (!note) fail(400, "Say what Coach should look at.");
+    const rawLink = String(body.link || "").trim().slice(0, 300);
+    let link = "";
+    if (rawLink) {
+      try { const u = new URL(/^https?:\/\//i.test(rawLink) ? rawLink : "https://" + rawLink); if (!/^https?:$/.test(u.protocol)) throw 0; link = u.toString(); }
+      catch (_) { fail(400, "That replay link doesn't look right."); }
+    }
+    const playlist = REVIEW_PL.includes(body.playlist) ? body.playlist : "";
+    const open = await db.prepare("SELECT COUNT(*) AS n FROM reviews WHERE user_id = ? AND status = 'open'").bind(user.id).first();
+    if (open && open.n >= 20) fail(429, "You have 20 requests waiting. Wait for Coach to get to some first.");
+    const id = newId(), now = Date.now();
+    await db.prepare("INSERT INTO reviews (id, user_id, week, session_id, playlist, link, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)").bind(id, user.id, wk, sid, playlist, link, note, now).run();
+    return json({ review: pubReview({ id, user_id: user.id, week: wk, session_id: sid, playlist, link, note, status: "open", created_at: now }) });
+  }
+  if (method === "DELETE" && a === "reviews" && b && !c) {
+    await db.prepare("DELETE FROM reviews WHERE id = ? AND user_id = ? AND status = 'open'").bind(b, user.id).run();
+    return json({ ok: true });
   }
   if (key === "POST password") {
     if (!(await checkPw(body.current, user.pw_hash))) fail(400, "Current password is wrong.");
@@ -608,6 +671,7 @@ async function route(db, req, method, segs, body, user) {
           db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM weeks WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM rank_history WHERE user_id = ?").bind(c),
+          db.prepare("DELETE FROM reviews WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM users WHERE id = ?").bind(c)
         ]);
         return json({ ok: true });
@@ -665,6 +729,15 @@ async function route(db, req, method, segs, body, user) {
       }
       await db.prepare("INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data").bind(JSON.stringify(s)).run();
       return json({ settings: s });
+    }
+    if (key === "GET coach/reviews") {
+      const { results } = await db.prepare("SELECT r.*, u.username FROM reviews r JOIN users u ON u.id = r.user_id ORDER BY (r.status = 'open') DESC, r.created_at DESC LIMIT 200").all();
+      return json({ reviews: results.map(pubReview) });
+    }
+    if (b === "reviews" && c && method === "PATCH") {
+      const status = body.status === "done" ? "done" : "open";
+      await db.prepare("UPDATE reviews SET status = ?, done_at = ? WHERE id = ?").bind(status, status === "done" ? Date.now() : null, c).run();
+      return json({ ok: true, status });
     }
     if (key === "GET coach/trackers") {
       const { results } = await db.prepare("SELECT id, username, tracker_url FROM users WHERE tracker_url IS NOT NULL AND tracker_url <> '' ORDER BY username COLLATE NOCASE").all();

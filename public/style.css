@@ -71,8 +71,13 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .desk{max-width:1180px;margin:0 auto;padding:4px var(--gutter) 48px;display:grid;gap:18px}
 .view{display:grid;gap:18px;min-width:0}
 .cols{display:grid;gap:18px}
-@media (min-width:980px){.cols{grid-template-columns:minmax(0,1fr) minmax(0,1.12fr);align-items:start}}
-.col{display:grid;gap:18px;min-width:0}
+/* A person's layout is a stack of bands: a wide section on its own, or two columns of narrow ones. */
+.band{display:grid;gap:18px;min-width:0}
+@media (min-width:980px){.band:not(.wide){grid-template-columns:minmax(0,1fr) minmax(0,1.12fr);align-items:start}}
+.col{display:grid;gap:18px;min-width:0;align-content:start}
+.win[data-h="s"] .wbody{max-height:260px;overflow:auto}
+.win[data-h="m"] .wbody{max-height:460px;overflow:auto}
+.win[data-h="l"] .wbody{max-height:720px;overflow:auto}
 
 /* ---------- Panels ---------- */
 .win{background:var(--cream);border:2px solid var(--scarlet);border-radius:var(--r);min-width:0;overflow:hidden}
@@ -369,3 +374,38 @@ body:has(#winAuth:not([hidden]))::after{content:"";position:fixed;right:0;bottom
 #winToday .wbody{gap:18px;padding-top:6px}
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---------- Layout editing ---------- */
+.lay-bar{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;padding:12px 16px;border:2px dashed var(--scarlet);border-radius:14px;font-weight:500}
+.lay-tools{display:none;order:3;flex-basis:100%;align-items:center;gap:4px;flex-wrap:wrap;padding-top:6px}
+.lay-on .lay-tools{display:flex}
+.lay-on .tbar{flex-wrap:wrap}
+.lay-on .win{outline:2px dashed var(--line-2);outline-offset:4px}
+.lay-on .col{min-height:80px}
+.lay-on .col:empty{border:2px dashed var(--line);border-radius:14px}
+.lay-tools button,.lay-tools select{min-height:30px;min-width:30px;padding:0 8px;border:2px solid var(--line-2);border-radius:8px;background:var(--cream);color:var(--scarlet);font:600 13px var(--text)}
+.lay-tools select{width:auto;min-height:30px;padding:2px 26px 2px 8px;background-position:right 8px center}
+.lay-tools button:hover{border-color:var(--scarlet)}
+.lay-drag{cursor:grab}
+.lay-phone{display:none}
+@media (max-width:979px){.lay-tools [data-lay="left"],.lay-tools [data-lay="right"],.lay-tools [data-lay="wide"],.lay-drag,.lay-desk{display:none}.lay-phone{display:inline}}
+.win.drag-over{outline-color:var(--scarlet)}
+
+/* ---------- Replay reviews ---------- */
+.rv{display:grid;gap:8px}
+.rv-list{display:grid;gap:6px}
+.rv-item{font-size:13px}
+.rv-item b{font-weight:600}
+.rv-open{justify-self:start}
+.rv-tag{font-size:12px;font-weight:600}
+.rv-inbox{display:grid;gap:12px}
+.rv-card{display:grid;gap:6px;padding:12px 0 0;border-top:2px solid var(--line)}
+.rv-card:first-child{border-top:0;padding-top:0}
+.rv-head{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline}
+.rv-head b{font:700 17px var(--display);text-transform:uppercase;letter-spacing:.02em}
+.rv-note{font-style:italic;white-space:pre-wrap;overflow-wrap:anywhere}
+.rv-card .row{gap:12px}
+.rv-done-h{font:700 15px var(--display);text-transform:uppercase;letter-spacing:.03em;padding-top:8px}
+.rv-card.done{opacity:.75}
+.task[data-count]{display:inline-flex;align-items:center;gap:6px}
+.task[data-count]::after{content:attr(data-count);position:static;padding:2px 6px;border-radius:999px;background:var(--cream);color:var(--scarlet);font:700 11px/1 var(--text);transform:none;height:auto}
