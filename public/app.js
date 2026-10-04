@@ -712,7 +712,7 @@
       '<p class="csum"></p>' +
       '<p class="nc"></p>' +
       '<div class="ro"></div>' +
-      '<div class="card-actions"><button type="button" class="btn sm danger" data-act="rmsess">Remove</button></div>';
+      '<div class="card-actions"><button type="button" class="linkbtn rank-nudge" data-act="rank-nudge" hidden>Rank changed? Update it</button><button type="button" class="btn sm danger" data-act="rmsess">Remove</button></div>';
     return c;
   }
   function fillReadOnly(box, s) {
@@ -743,6 +743,9 @@
     sumEl.textContent = sum;
     sumEl.hidden = !sum;
     c.querySelector(".nc").textContent = counts(s, S.me) ? "" : "Doesn't count: " + shortReason(s, S.me);
+    // After a Ranked Session, until the player updates their ranks.
+    const r = S.me.ranks.ranksAt;
+    c.querySelector(".rank-nudge").hidden = !(s.type === "ranked" && feat("ranks") && !(r && r >= s.endedAt));
     fillReadOnly(c.querySelector(".ro"), s);
   }
   function renderToday() {
@@ -880,6 +883,7 @@
     const act = b.dataset.act;
     if (act === "checkin") { checkIn(b.dataset.type); return; }
     if (act === "checkout") { checkOut(null); return; }
+    if (act === "rank-nudge") { setPage("progress"); openRankForm(); $("#winRanks").scrollIntoView({ block: "start" }); return; }
     if (act === "checkout-set") { const v = n0(b.closest(".warnbox").querySelector(".lw-min").value); if (v > 0) checkOut(v); return; }
     if (act === "rv-open" || act === "rv-cancel") {
       const card = b.closest(".card"), f = card.querySelector(".rv-form");
@@ -1139,7 +1143,63 @@
     if (!S.me) return;
     rankRows($("#rankList"), S.me.ranks, S.myHist);
     $("#rankUpdated").textContent = rankStamp(S.me.ranks);
+    const tr = $("#rankTracker");
+    tr.hidden = !S.me.trackerUrl;
+    if (S.me.trackerUrl) tr.href = S.me.trackerUrl;
   }
+
+  /* ---------- Ranks form: coaches for any player, players for themselves ---------- */
+  function ranksFormHtml() {
+    return PL.map(q => '<fieldset class="ef"><legend>' + q.name + '</legend><div class="ef-grid">' +
+      '<label>Rank<select name="' + q.key + '-tier"><option value="">—</option>' + TIERS.map(t => "<option>" + t + "</option>").join("") + "</select></label>" +
+      '<label>Division<select name="' + q.key + '-div"><option value="">—</option>' + DIVS.map(t => "<option>" + t + "</option>").join("") + "</select></label>" +
+      '<label>MMR<input type="number" min="0" inputmode="numeric" name="' + q.key + '-mmr"></label>' +
+      '<label>Games<input type="number" min="0" inputmode="numeric" name="' + q.key + '-games"></label></div></fieldset>').join("");
+  }
+  function fillRanksForm(f, ranks) {
+    for (const q of PL) {
+      const x = ranks.playlists[q.key];
+      f.elements[q.key + "-tier"].value = x.tier || "";
+      f.elements[q.key + "-div"].value = x.div || "";
+      f.elements[q.key + "-mmr"].value = x.mmr === null ? "" : String(x.mmr);
+      f.elements[q.key + "-games"].value = x.games === null ? "" : String(x.games);
+    }
+  }
+  function readRanksForm(f) {
+    const ranks = {};
+    for (const q of PL) ranks[q.key] = { tier: f.elements[q.key + "-tier"].value || null, div: f.elements[q.key + "-div"].value || null, mmr: numOrNull(f.elements[q.key + "-mmr"].value), games: numOrNull(f.elements[q.key + "-games"].value) };
+    return ranks;
+  }
+  function openRankForm() {
+    const f = $("#rankForm");
+    if (!f.dataset.built) {
+      f.dataset.built = "1";
+      f.insertAdjacentHTML("afterbegin", '<h3>Update my ranks</h3><p class="fine">Use what the game or your tracker shows right now. MMR and games are optional.</p>' + ranksFormHtml());
+    }
+    fillRanksForm(f, S.me.ranks);
+    setStatus($("#rankStatus"), "");
+    f.hidden = false;
+    $("#rankEdit").hidden = true;
+    const first = f.querySelector("select");
+    if (first) first.focus();
+  }
+  function closeRankForm() { $("#rankForm").hidden = true; $("#rankEdit").hidden = false; }
+  $("#rankEdit").addEventListener("click", openRankForm);
+  $("#rankCancel").addEventListener("click", closeRankForm);
+  $("#rankForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const go = $("#rankSave"), st = $("#rankStatus");
+    go.disabled = true;
+    try {
+      const r = await api("PUT", "ranks", { ranks: readRanksForm(e.target) });
+      S.me.ranks = normUser(r.me).ranks;
+      try { const h = await api("GET", "ranks/history"); S.myHist = normHist(h.history); } catch (_) {}
+      closeRankForm();
+      renderRanks(); renderToday();
+      setStatus($("#rankSaved"), "Ranks saved.", "ok");
+    } catch (err) { setStatus(st, err.message, "err"); }
+    finally { go.disabled = false; }
+  });
 
   /* ---------- Coach: data ---------- */
   let coachLoading = false;
@@ -1613,24 +1673,10 @@
       }
     });
     btn("Ranks", "", () => {
-      const cur = S.roster[id].ranks;
-      const inner = PL.map(q => '<fieldset class="ef"><legend>' + q.name + '</legend><div class="ef-grid">' +
-        '<label>Rank<select name="' + q.key + '-tier"><option value="">—</option>' + TIERS.map(t => "<option>" + t + "</option>").join("") + "</select></label>" +
-        '<label>Division<select name="' + q.key + '-div"><option value="">—</option>' + DIVS.map(t => "<option>" + t + "</option>").join("") + "</select></label>" +
-        '<label>MMR<input type="number" min="0" name="' + q.key + '-mmr"></label>' +
-        '<label>Games<input type="number" min="0" name="' + q.key + '-games"></label></div></fieldset>').join("");
-      const f = form("Ranks", inner, "Save", async f2 => {
-        const ranks = {};
-        for (const q of PL) ranks[q.key] = { tier: f2.elements[q.key + "-tier"].value || null, div: f2.elements[q.key + "-div"].value || null, mmr: numOrNull(f2.elements[q.key + "-mmr"].value), games: numOrNull(f2.elements[q.key + "-games"].value) };
-        if (await patch({ ranks }, "Ranks saved.")) loadHist(id);
+      const f = form("Ranks", ranksFormHtml(), "Save", async f2 => {
+        if (await patch({ ranks: readRanksForm(f2) }, "Ranks saved.")) loadHist(id);
       });
-      for (const q of PL) {
-        const x = cur.playlists[q.key];
-        f.elements[q.key + "-tier"].value = x.tier || "";
-        f.elements[q.key + "-div"].value = x.div || "";
-        f.elements[q.key + "-mmr"].value = x.mmr === null ? "" : String(x.mmr);
-        f.elements[q.key + "-games"].value = x.games === null ? "" : String(x.games);
-      }
+      fillRanksForm(f, S.roster[id].ranks);
     });
     if (admin) btn(p.role === "coach" ? "Make player" : "Make coach", "", () => {
       const toCoach = S.roster[id].role !== "coach";

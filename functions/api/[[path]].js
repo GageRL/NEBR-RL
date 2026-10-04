@@ -973,6 +973,16 @@ async function route(ctx, segs) {
     return json({ weeks: results.map(r => ({ week: r.week, data: parse(r.data, {}) })) });
   }
   if (key === "GET ranks/history") return json({ history: await readHistory(db, user.id) });
+  // Players keep their own ranks current. (Rocket League Tracker has no Rocket League API, and asks not to be scraped.)
+  if (key === "PUT ranks") {
+    if (!isPlain(body.ranks)) fail(400, "Bad request.");
+    const row = await db.prepare("SELECT ranks FROM users WHERE id = ?").bind(user.id).first();
+    const next = applyRanks(parse(row && row.ranks, {}), body.ranks, false);
+    await db.prepare("UPDATE users SET ranks = ? WHERE id = ?").bind(JSON.stringify(next), user.id).run();
+    await recordHistory(db, user.id, next);
+    const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(user.id).first();
+    return json({ me: pub(u) });
+  }
   if (method === "GET" && a === "leaderboard" && b && !c) {
     // Effort this week, per member of this school: sessions finished, then ranked games. Names and counts only.
     // Coaches only show up once they've logged something themselves.

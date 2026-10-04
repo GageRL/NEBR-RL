@@ -397,6 +397,8 @@ html[data-accent="no"] .wl-day.is-today .wl-date::after{background:var(--brand);
 @media (max-width:560px){.past-row{grid-template-columns:auto auto 1fr auto;grid-template-areas:"wk wk wk st" "r t g g";column-gap:12px;row-gap:2px}.past-wk{grid-area:wk}.past-st{grid-area:st}.past-n:nth-child(2){grid-area:r}.past-n:nth-child(3){grid-area:t}.past-g{grid-area:g}}
 
 /* ---------- Ranks ---------- */
+.rank-acts{gap:10px 18px}
+.card-actions .rank-nudge{margin-right:auto}
 .rank-list{display:grid}
 .rank{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:14px;padding:12px 0;border-top:1.5px solid var(--line)}
 .rank:first-child{border-top:0;padding-top:2px}
