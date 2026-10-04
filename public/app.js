@@ -2394,4 +2394,6 @@
   }, 30000);
 
   boot();
+  // This copy of the script ran: a later loading problem can recover again.
+  try { sessionStorage.removeItem("bp:recovered"); } catch (_) {}
 })();
