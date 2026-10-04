@@ -1,3 +1,4 @@
+import { generateVapid, sendPush, isPushEndpoint, unb64url } from "../../lib/webpush.js";
 /*
  * Nebraska Esports training hub: API for every /api/* request.
  * Cloudflare Pages Function. Needs a D1 database bound as DB.
@@ -79,7 +80,16 @@ const SCHEMA = [
      created_at INTEGER NOT NULL,
      done_at INTEGER
    )`,
-  `CREATE INDEX IF NOT EXISTS reviews_user ON reviews(user_id, created_at)`
+  `CREATE INDEX IF NOT EXISTS reviews_user ON reviews(user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS push_subs (
+     endpoint TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL,
+     p256dh TEXT NOT NULL,
+     auth TEXT NOT NULL,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id)`,
+  `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)`
 ];
 const HISTORY_DAYS = 120;
 let schemaReady = false;
@@ -430,7 +440,7 @@ function checkOrigin(req) {
   if (req.method === "POST" && !ct.toLowerCase().startsWith("application/json")) fail(415, "Bad request.");
 }
 
-export async function onRequest({ request, env, params }) {
+export async function onRequest({ request, env, params, waitUntil }) {
   try {
     if (!env.DB) return json({ error: "The site's database isn't connected yet." }, 503);
     const db = env.DB;
@@ -448,7 +458,9 @@ export async function onRequest({ request, env, params }) {
     let body = null;
     if (method !== "GET" && method !== "HEAD") { checkOrigin(request); body = await readJson(request); }
     const user = await currentUser(db, request);
-    const res = await route(db, request, method, segs, body || {}, user);
+    // Work that can finish after the response is sent (push notifications).
+    const later = p => { const q = Promise.resolve(p).catch(e => console.error(e && e.stack ? e.stack : e)); if (waitUntil) waitUntil(q); };
+    const res = await route(db, request, method, segs, body || {}, user, later);
     // Sign-ins renew themselves: any request in the last 29 days of a session pushes it out to 30 again.
     if (user && !res.headers.has("Set-Cookie") && user.s_exp - Date.now() < (SESSION_DAYS - 1) * 864e5) {
       await db.prepare("UPDATE sessions SET expires_at = ? WHERE token_hash = ?").bind(Date.now() + SESSION_DAYS * 864e5, user.s_hash).run();
@@ -462,7 +474,45 @@ export async function onRequest({ request, env, params }) {
   }
 }
 
-async function route(db, req, method, segs, body, user) {
+/* ---------- Push notifications ---------- */
+const PUSH_SUBJECT = "https://nebr-rl.pages.dev";
+let vapidCache = null;
+// The site's VAPID key pair is made once, on first use, and kept in the database (the private key never leaves the server).
+async function vapidKeys(db) {
+  if (vapidCache) return vapidCache;
+  let row = await db.prepare("SELECT v FROM kv WHERE k = 'vapid'").first();
+  if (!row) {
+    await db.prepare("INSERT OR IGNORE INTO kv (k, v) VALUES ('vapid', ?)").bind(JSON.stringify(await generateVapid())).run();
+    row = await db.prepare("SELECT v FROM kv WHERE k = 'vapid'").first();
+  }
+  vapidCache = JSON.parse(row.v);
+  return vapidCache;
+}
+const clip = (t, n) => { const s = String(t || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "\u2026" : s; };
+async function notify(db, userIds, msg) {
+  const ids = Array.from(new Set(userIds.filter(Boolean)));
+  if (!ids.length) return { sent: 0, failed: 0 };
+  const { results } = await db.prepare("SELECT * FROM push_subs WHERE user_id IN (" + ids.map(() => "?").join(", ") + ")").bind(...ids).all();
+  if (!results.length) return { sent: 0, failed: 0 };
+  const keys = await vapidKeys(db), payload = JSON.stringify(msg), gone = [];
+  let sent = 0, failed = 0;
+  await Promise.all(results.map(async sub => {
+    try {
+      const r = await sendPush(sub, payload, keys, PUSH_SUBJECT);
+      if (r.ok) sent++;
+      else { failed++; if (r.status === 404 || r.status === 410) gone.push(sub.endpoint); else console.error("push " + r.status + " " + new URL(sub.endpoint).hostname + " " + (await r.text()).slice(0, 200)); }
+    } catch (e) { failed++; console.error(e && e.stack ? e.stack : e); }
+  }));
+  // The browser dropped these subscriptions (uninstalled, permission removed): forget them.
+  if (gone.length) await db.batch(gone.map(ep => db.prepare("DELETE FROM push_subs WHERE endpoint = ?").bind(ep)));
+  return { sent, failed };
+}
+async function coachIds(db, except) {
+  const { results } = await db.prepare("SELECT id FROM users WHERE role = 'coach'").all();
+  return results.map(r => r.id).filter(id => id !== except);
+}
+
+async function route(db, req, method, segs, body, user, later) {
   const [a, b, c] = segs;
   const key = method + " " + [a, b].filter(Boolean).join("/");
 
@@ -499,6 +549,8 @@ async function route(db, req, method, segs, body, user) {
   }
   if (key === "POST logout") {
     if (user) await db.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(user.s_hash).run();
+    // Signing off a device also stops its notifications.
+    if (user && body.endpoint) await db.prepare("DELETE FROM push_subs WHERE endpoint = ? AND user_id = ?").bind(String(body.endpoint), user.id).run();
     return json({ ok: true }, 200, { "Set-Cookie": cookie(req, "", 0) });
   }
 
@@ -514,6 +566,27 @@ async function route(db, req, method, segs, body, user) {
     if (sets.length) await db.prepare("UPDATE users SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, user.id).run();
     const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(user.id).first();
     return json({ me: pub(u) });
+  }
+  /* Push notifications for this device */
+  if (key === "GET push/key") return json({ key: (await vapidKeys(db)).publicKey });
+  if (key === "POST push/subscribe") {
+    const ep = String(body.endpoint || ""), k = isPlain(body.keys) ? body.keys : {};
+    const p256dh = String(k.p256dh || ""), auth = String(k.auth || "");
+    if (!isPushEndpoint(ep) || ep.length > 1000 || !/^[A-Za-z0-9_-]{80,100}$/.test(p256dh) || !/^[A-Za-z0-9_-]{16,40}$/.test(auth)) fail(400, "This browser's notification setup wasn't accepted.");
+    try { await crypto.subtle.importKey("raw", unb64url(p256dh), { name: "ECDH", namedCurve: "P-256" }, false, []); }
+    catch (_) { fail(400, "This browser's notification setup wasn't accepted."); }
+    await db.prepare("INSERT INTO push_subs (endpoint, user_id, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth").bind(ep, user.id, p256dh, auth, Date.now()).run();
+    // Keep the newest 10 devices per person.
+    await db.prepare("DELETE FROM push_subs WHERE user_id = ? AND endpoint NOT IN (SELECT endpoint FROM push_subs WHERE user_id = ? ORDER BY created_at DESC LIMIT 10)").bind(user.id, user.id).run();
+    return json({ ok: true });
+  }
+  if (key === "POST push/unsubscribe") {
+    await db.prepare("DELETE FROM push_subs WHERE endpoint = ? AND user_id = ?").bind(String(body.endpoint || ""), user.id).run();
+    return json({ ok: true });
+  }
+  if (key === "POST push/test") {
+    const r = await notify(db, [user.id], { title: "Notifications are on", body: "You'll get Coach notes and replay reviews here.", url: "/", tag: "test" });
+    return json(r);
   }
   /* Replay review requests: a player asks the coach to look at a Ranked Session. */
   if (key === "GET reviews") {
@@ -539,6 +612,7 @@ async function route(db, req, method, segs, body, user) {
     if (open && open.n >= 20) fail(429, "You have 20 requests waiting. Wait for Coach to get to some first.");
     const id = newId(), now = Date.now();
     await db.prepare("INSERT INTO reviews (id, user_id, week, session_id, playlist, link, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)").bind(id, user.id, wk, sid, playlist, link, note, now).run();
+    later(coachIds(db, user.id).then(ids => notify(db, ids, { title: "Replay review request", body: user.username + ": " + clip(note, 140), url: "/?go=reviews", tag: "rv-" + id })));
     return json({ review: pubReview({ id, user_id: user.id, week: wk, session_id: sid, playlist, link, note, status: "open", created_at: now }) });
   }
   if (method === "DELETE" && a === "reviews" && b && !c) {
@@ -638,8 +712,10 @@ async function route(db, req, method, segs, body, user) {
       if (!s.endedAt) fail(400, "Notes can be added once the session is checked out.");
       // eslint-disable-next-line no-control-regex
       const note = String(body.note == null ? "" : body.note).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 1000);
+      const before = s.coachNote || "";
       if (note) { s.coachNote = note; s.coachNoteAt = new Date().toISOString(); } else { delete s.coachNote; delete s.coachNoteAt; }
       await db.prepare("UPDATE weeks SET data = ?, updated_at = ? WHERE user_id = ? AND week = ?").bind(JSON.stringify(d), Date.now(), c, wk).run();
+      if (note && note !== before && c !== user.id) later(notify(db, [c], { title: "Coach left a note", body: clip(note, 160), url: "/?go=week&wk=" + wk, tag: "note-" + sid }));
       return json({ ok: true, note });
     }
     if (b === "players" && c && segs[3] === "sessions" && segs[5] && !segs[6] && method === "PUT") {
@@ -672,6 +748,7 @@ async function route(db, req, method, segs, body, user) {
           db.prepare("DELETE FROM weeks WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM rank_history WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM reviews WHERE user_id = ?").bind(c),
+          db.prepare("DELETE FROM push_subs WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM users WHERE id = ?").bind(c)
         ]);
         return json({ ok: true });
@@ -736,7 +813,12 @@ async function route(db, req, method, segs, body, user) {
     }
     if (b === "reviews" && c && method === "PATCH") {
       const status = body.status === "done" ? "done" : "open";
+      const prev = await db.prepare("SELECT user_id, status, playlist FROM reviews WHERE id = ?").bind(c).first();
       await db.prepare("UPDATE reviews SET status = ?, done_at = ? WHERE id = ?").bind(status, status === "done" ? Date.now() : null, c).run();
+      if (prev && prev.status !== "done" && status === "done" && prev.user_id !== user.id) {
+        const pl = { duel: "1v1 Duel", doubles: "2v2 Doubles", standard: "3v3 Standard" }[prev.playlist];
+        later(notify(db, [prev.user_id], { title: "Replay reviewed", body: "Coach went over your " + (pl ? pl + " " : "") + "replay.", url: "/?go=week", tag: "rvd-" + c }));
+      }
       return json({ ok: true, status });
     }
     if (b === "reviews" && c && method === "DELETE") {
