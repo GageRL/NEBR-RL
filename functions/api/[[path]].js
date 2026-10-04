@@ -974,18 +974,23 @@ async function route(ctx, segs) {
   }
   if (key === "GET ranks/history") return json({ history: await readHistory(db, user.id) });
   if (method === "GET" && a === "leaderboard" && b && !c) {
-    // Ranked games logged this week, per member of this school. Names and counts only.
+    // Effort this week, per member of this school: sessions finished, then ranked games. Names and counts only.
+    // Coaches only show up once they've logged something themselves.
     const wk = weekId(b);
-    const { results } = await db.prepare("SELECT u.username AS name, w.data AS data FROM users u LEFT JOIN weeks w ON w.user_id = u.id AND w.week = ? WHERE u.school_id = ? AND u.role IN ('player', 'coach')").bind(wk, school.id).all();
+    const { results } = await db.prepare("SELECT u.username AS name, u.role AS role, w.data AS data FROM users u LEFT JOIN weeks w ON w.user_id = u.id AND w.week = ? WHERE u.school_id = ? AND u.role IN ('player', 'coach')").bind(wk, school.id).all();
     const rows = results.map(r => {
       const d = parse(r.data, {});
-      let games = 0;
+      let games = 0, sessions = 0;
       for (const s of Array.isArray(d.sessions) ? d.sessions : []) {
-        if (!isPlain(s) || !isPlain(s.games)) continue;
+        if (!isPlain(s)) continue;
+        if (s.endedAt) sessions++;
+        if (!isPlain(s.games)) continue;
         for (const p of PL) { const g = s.games[p]; if (isPlain(g)) games += (Number(g.w) || 0) + (Number(g.l) || 0); }
       }
-      return { name: r.name, games };
-    }).sort((x, y) => y.games - x.games || x.name.localeCompare(y.name, "en", { sensitivity: "base" }));
+      return { name: r.name, sessions, games, coach: r.role === "coach" };
+    }).filter(r => !r.coach || r.sessions || r.games)
+      .map(r => ({ name: r.name, sessions: r.sessions, games: r.games }))
+      .sort((x, y) => y.sessions - x.sessions || y.games - x.games || x.name.localeCompare(y.name, "en", { sensitivity: "base" }));
     return json({ week: wk, rows });
   }
   if (method === "PUT" && a === "weeks" && b && !c) {

@@ -190,9 +190,9 @@
   const S = {
     today: todayStr(), phase: "loading", needsSetup: false,
     settings: normSettings(null), me: null, weeks: {},
-    view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
+    view: "player", page: "home", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
-    removals: {}, myHist: [], hist: {}, pweeks: {}, myReviews: [], reviews: [], layEdit: false, layApplied: {}, noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
+    removals: {}, myHist: [], hist: {}, pweeks: {}, myReviews: [], reviews: [], noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
     events: [], schedAccess: false, cEvents: [], evEdit: null, school: null, paused: false, missing: false, adminSkip: false,
     undo: [], saveErr: null, settingsDirty: false, lookPreview: false, board: null
   };
@@ -248,18 +248,26 @@
     catch (_) { return; }
     renderBoard();
   }
+  // Effort, not rank: sessions finished this week, then ranked games. Your own row stands out; nobody is ranked last.
   function renderBoard() {
     const me = S.me ? S.me.name.toLowerCase() : "";
     document.querySelectorAll("[data-board]").forEach(list => {
       list.textContent = "";
       if (!S.board) return;
       if (!S.board.length) { list.append(mk("li", "none", "No players yet")); return; }
-      S.board.forEach((r, i) => {
-        // The top spot is only featured once someone has actually logged games.
-        const li = mk("li", [String(r.name).toLowerCase() === me ? "me" : "", i === 0 && r.games > 0 ? "lead" : ""].join(" ").trim());
-        li.append(mk("span", "bn", r.name), mk("span", "bg", String(r.games)));
+      const on = r => (r.sessions || 0) > 0 || r.games > 0;
+      for (const r of S.board.filter(on)) {
+        const li = mk("li", String(r.name).toLowerCase() === me ? "me" : "");
+        const n = r.sessions || 0;
+        li.append(mk("span", "bn", r.name), mk("span", "bs", n + (n === 1 ? " session" : " sessions")), mk("span", "bg", r.games + (r.games === 1 ? " game" : " games")));
         list.append(li);
-      });
+      }
+      const idle = S.board.filter(r => !on(r));
+      if (idle.length) {
+        const li = mk("li", "idle");
+        li.append(mk("span", "idle-h", "Not started this week"), mk("span", "idle-n", idle.map(r => r.name).join(", ")));
+        list.append(li);
+      }
     });
   }
   function flushAll() { for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; flush(k); } }
@@ -324,34 +332,25 @@
     return rows;
   }
   function remaining(rows) { return rows.reduce((a, r) => a + Math.max(0, r.target - r.done), 0); }
-  function renderReqs(box, rows) {
-    box.textContent = "";
-    for (const r of rows) {
-      const wrap = mk("div", "req" + (r.done >= r.target ? " met" : ""));
-      const pips = mk("span", "pips");
-      pips.setAttribute("aria-hidden", "true");
-      for (let i = 0; i < Math.min(14, Math.max(r.target, r.done)); i++) pips.append(mk("i", i < r.done ? "on" : ""));
-      wrap.append(mk("span", "req-name", r.label), pips, mk("span", "req-nums", r.done + " / " + r.target));
-      box.append(wrap);
-    }
-  }
+  // Requirements everywhere use the same meters as Home (count, then a bar of sessions).
+  function renderReqs(box, rows) { box.classList.add("meters"); renderMeters(box, rows); }
   function missedText(rows) {
     return rows.filter(r => r.done < r.target).map(r => (r.target - r.done) + " " + (r.key === "ranked" ? "Ranked" : "Training")).join(", ");
   }
 
-  /* ---------- Window chrome ---------- */
-  function setMin(win, min) {
-    win.classList.toggle("min", min);
-    const b = win.querySelector(".tmin");
-    if (b && b.id !== "accClose") { b.setAttribute("aria-expanded", String(!min)); b.textContent = min ? "□" : "_"; }
+  /* ---------- Going to a section: switch to its page, then scroll to it ---------- */
+  function showWin(sel) {
+    const w = $(sel);
+    if (!w) return;
+    const pg = w.closest(".page"), view = w.closest(".view");
+    if (w.id === "winAccount") setPage("account");
+    else if (pg && view) {
+      const v = view.id === "viewCoach" ? "coach" : "player";
+      if (S.view !== v) { S.view = v; pref.set("view", v); }
+      setPage(pg.dataset.page, true);
+    }
+    w.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
   }
-  document.querySelectorAll(".win .tmin").forEach(b => {
-    if (b.id === "accClose") return;
-    const win = b.closest(".win");
-    if (pref.get("min:" + win.id) === "1") setMin(win, true);
-    b.addEventListener("click", () => { const m = !win.classList.contains("min"); setMin(win, m); pref.set("min:" + win.id, m ? "1" : "0"); });
-  });
-  function showWin(sel) { const w = $(sel); setMin(w, false); pref.set("min:" + w.id, "0"); w.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" }); }
 
   /* ---------- Header + taskbar ---------- */
   /* ---------- The school's look: colors, background, lettering, corners, header ---------- */
@@ -408,29 +407,98 @@
     if ($("#manifestLink").getAttribute("href") !== man) $("#manifestLink").href = man;
     if (!S.lookPreview) applyTheme(s);
   }
-  function setView(v) { S.view = v; pref.set("view", v); if (v === "coach") loadCoach(); renderAll(); window.scrollTo({ top: 0 }); }
-  function renderTaskbar() {
-    const box = $("#taskBtns");
-    box.textContent = "";
-    if (S.phase !== "app") return;
-    const add = (label, cls, pressed, fn) => { const b = mk("button", "task " + cls, label); b.type = "button"; if (pressed !== null) b.setAttribute("aria-pressed", String(pressed)); b.addEventListener("click", fn); box.append(b); };
-    // The Backpost admin only has the coach view (no training of their own here).
-    if (S.me.role === "coach" && !S.me.admin) {
-      add("Coach", "view", S.view === "coach", () => setView("coach"));
-      add("My Training", "view", S.view === "player", () => setView("player"));
-      box.append(mk("span", "tsep"));
-    }
-    const secs = S.view === "coach" ? [["Roster", "#winRoster"], ["Schedule", "#winSchedC"], ["Reviews", "#winReviews"], ["Player", "#winPlayer"], ["Board", "#winBoardC"], ["Settings", "#winSettings"]] : [["Today", "#winToday"], ["My Week", "#winWeek"], ["Schedule", "#winSched"], ["Ranks", "#winRanks"], ["Board", "#winBoard"]];
-    for (const [label, sel] of secs) if (!$(sel).hidden) add(label, "sec", null, () => showWin(sel));
-    rvBadge();
-    add("Layout", "sec lay", S.layEdit, () => setLayEdit(!S.layEdit));
-    if (S.me.admin) add("Admin", "acct", null, () => { location.href = "/admin"; });
-    else add(S.me.name || "Account", "acct", null, openAccount);
+  /* ---------- Pages: four per view, a bottom bar on phones and a sidebar on wide screens ---------- */
+  const ICON = {
+    home: '<path d="M3 11l9-7 9 7"/><path d="M5.5 9.5V20h13V9.5"/>',
+    progress: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+    schedule: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+    team: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.9.7 3.1 2.4 3.5 5.2"/>',
+    roster: '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>',
+    reviews: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M10 8v5l4.5-2.5z"/><path d="M8 21h8"/>',
+    settings: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'
+  };
+  const icon = k => '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + ICON[k] + "</svg>";
+  const PAGES = {
+    player: [["home", "Home"], ["progress", "Progress"], ["schedule", "Schedule"], ["team", "Team"]],
+    coach: [["roster", "Roster"], ["schedule", "Schedule"], ["reviews", "Reviews"], ["settings", "Settings"]]
+  };
+  function pagesFor(view) {
+    return PAGES[view].filter(([p]) => {
+      if (p === "schedule") return feat("schedule") && (view === "coach" || S.schedAccess);
+      if (p === "team") return feat("board");
+      if (p === "reviews") return feat("reviews");
+      return true;
+    });
   }
+  function pageOk(p) { return p === "account" || pagesFor(S.view).some(([x]) => x === p); }
+  // Pages live in the address (#progress) so the back button works on phones.
+  function setPage(p, keepScroll) {
+    if (!pageOk(p)) p = pagesFor(S.view)[0][0];
+    const changed = S.page !== p;
+    S.page = p;
+    const hash = "#" + p;
+    if (location.hash !== hash) { try { history.pushState(null, "", hash); } catch (_) { location.hash = hash; } }
+    renderAll();
+    if (changed && !keepScroll) window.scrollTo({ top: 0 });
+  }
+  window.addEventListener("popstate", () => {
+    if (S.phase !== "app") return;
+    const p = location.hash.slice(1);
+    if (p && pageOk(p) && p !== S.page) { S.page = p; renderAll(); }
+  });
+  function setView(v) {
+    S.view = v; pref.set("view", v);
+    if (v === "coach") loadCoach();
+    setPage(pagesFor(v)[0][0]);
+  }
+  function renderNav() {
+    const nav = $("#appNav"), box = $("#navBtns"), foot = $("#navFoot"), app = S.phase === "app";
+    nav.hidden = !app;
+    $("#meBtn").hidden = !app || S.me.admin;
+    if (!app) return;
+    const want = pagesFor(S.view).map(([p, label]) => p + ":" + label).join("|") + "/" + S.view;
+    if (box.dataset.k !== want) {
+      box.dataset.k = want;
+      box.textContent = "";
+      for (const [p, label] of pagesFor(S.view)) {
+        const b = mk("button", "nav-b");
+        b.type = "button"; b.dataset.page = p;
+        b.innerHTML = icon(p === "schedule" ? "schedule" : p) + '<span class="nav-l"></span>';
+        b.querySelector(".nav-l").textContent = label;
+        b.addEventListener("click", () => setPage(p));
+        box.append(b);
+      }
+    }
+    box.querySelectorAll(".nav-b").forEach(b => { if (b.dataset.page === S.page) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
+    // Sidebar foot (wide screens): who's signed in, and the coach's own training.
+    foot.textContent = "";
+    if (S.me.admin) {
+      const a = mk("a", "nav-acct", "Backpost admin"); a.href = "/admin"; foot.append(a);
+    } else {
+      const acct = mk("button", "nav-acct" + (S.page === "account" ? " on" : ""));
+      acct.type = "button";
+      acct.append(mk("span", "me-init", initials(S.me.name)), mk("span", "nav-acct-n", S.me.name));
+      if (S.page === "account") acct.setAttribute("aria-current", "page");
+      acct.addEventListener("click", () => setPage("account"));
+      foot.append(acct);
+      if (S.me.role === "coach") {
+        const sw = mk("button", "nav-switch", S.view === "coach" ? "My training" : "Coach view");
+        sw.type = "button";
+        sw.addEventListener("click", () => setView(S.view === "coach" ? "player" : "coach"));
+        foot.append(sw);
+      }
+    }
+    $("#meInit").textContent = initials(S.me.name);
+    $("#meLabel").textContent = "Account: " + S.me.name;
+    $("#meBtn").classList.toggle("on", S.page === "account");
+    rvBadge();
+  }
+  $("#meBtn").addEventListener("click", () => setPage(S.page === "account" ? pagesFor(S.view)[0][0] : "account"));
+  document.addEventListener("click", e => { const g = e.target.closest("[data-go]"); if (g) setPage(g.dataset.go); });
 
   // Number of replay reviews waiting, on the Reviews tab (updated in place so focus stays put).
   function rvBadge() {
-    const b = Array.from(document.querySelectorAll("#taskBtns .task.sec")).find(x => x.textContent === "Reviews");
+    const b = document.querySelector('#navBtns .nav-b[data-page="reviews"]');
     if (!b) return;
     const n = S.reviews.filter(r => r.status === "open").length;
     if (n) { b.dataset.count = String(n); b.setAttribute("aria-label", "Reviews, " + n + " waiting"); }
@@ -461,20 +529,18 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.events = []; S.cEvents = []; S.evEdit = null; S.layEdit = false; S.layApplied = {}; S.needsSetup = false;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.events = []; S.cEvents = []; S.evEdit = null; S.needsSetup = false;
     setStatus($("#authStatus"), "Signed out. Sign in again.", "err");
     renderAll();
   }
-  function openAccount() {
-    const w = $("#winAccount");
-    w.hidden = false;
-    $("#accName").textContent = S.me.name + (S.me.team ? " · " + teamName(S.me.team) : "");
-    setStatus($("#pwStatus"), "");
-    setStatus($("#pushStatus"), "");
-    renderAppBox();
-    w.scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
+  function renderAccount() {
+    if (!S.me || S.me.admin) return;
+    $("#accName").textContent = S.me.name + (S.me.role === "coach" ? ", coach" : S.me.team ? ", " + teamName(S.me.team) : "");
+    // A coach switches between the coach view and their own training here (phones) or in the sidebar.
+    $("#accSwitch").hidden = S.me.role !== "coach";
+    $("#accView").textContent = S.view === "coach" ? "Switch to my training" : "Back to the coach view";
   }
-  $("#accClose").addEventListener("click", () => { $("#winAccount").hidden = true; });
+  $("#accView").addEventListener("click", () => setView(S.view === "coach" ? "player" : "coach"));
   $("#pwForm").addEventListener("submit", async e => {
     e.preventDefault();
     const st = $("#pwStatus");
@@ -488,7 +554,7 @@
   $("#adminMember").addEventListener("click", () => {
     flushAll();
     S.adminSkip = true;
-    S.phase = "auth"; S.me = null; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.reviews = []; S.cEvents = []; S.evEdit = null; S.layEdit = false;
+    S.phase = "auth"; S.me = null; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.reviews = []; S.cEvents = []; S.evEdit = null;
     renderAll();
     setStatus($("#authStatus"), "Sign in with your team account. You stay signed in as the Backpost admin.", "");
     $("#authName").focus();
@@ -571,6 +637,7 @@
     c.innerHTML =
       '<div class="card-head"><p class="ctype"></p><p class="ctime mono"></p></div>' +
       '<p class="counts-hint"></p>' +
+      '<p class="live-focus" hidden><b>Focus</b> <span></span></p>' +
       '<div class="warnbox long-warn" hidden><p>Still checked in after 6 hours?</p>' +
       '<div class="row"><input type="number" class="lw-min" min="1" max="1440" step="5" placeholder="Minutes" aria-label="Actual minutes"><button type="button" class="btn" data-act="checkout-set">Check out with this time</button></div></div>' +
       '<label class="chk sec-warm"><input type="checkbox" data-sfield="warmup"> Warmup</label>' +
@@ -610,6 +677,9 @@
     hint.hidden = need <= 0 || T.free;
     hint.classList.toggle("ok", have >= need);
     hint.textContent = have >= need ? "\u2713 Counts toward the week" : isRanked ? "Counts at " + need + " games \u00b7 " + have + " so far" : "Counts after " + need + " min";
+    const lf = c.querySelector(".live-focus"), fx = lastFocus(a.id);
+    lf.hidden = !fx;
+    if (fx) lf.querySelector("span").textContent = fx.text;
     const rf = reflFor(a.type);
     c.querySelector(".lbl-did").textContent = rf.notes;
     for (const [k, l] of rf.q) c.querySelector('.rq[data-k="' + k + '"]').textContent = l;
@@ -623,15 +693,18 @@
     c.querySelector('[data-act="undo"]').disabled = !S.undo.some(u => u.sid === a.id);
     const rl = c.querySelector(".rv-list"), mine = S.myReviews.filter(r => r.sessionId === a.id);
     rl.textContent = "";
-    for (const r of mine) rl.append(reviewLine(r));
+    if (mine.length) rl.append(reviewSummary(mine));
     rl.hidden = !mine.length;
   }
   const plName = k => { const q = PL.find(x => x.key === k); return q ? q.name : ""; };
-  function reviewLine(r) {
-    const p = mk("p", "rv-item");
-    p.append(mk("b", "", r.status === "done" ? "\u2713 Replay reviewed" : "Replay review requested"), document.createTextNode(" " + [plName(r.playlist), r.status === "done" ? "" : "waiting for Coach"].filter(Boolean).join(", ")));
+  function reviewSummary(list) {
+    const open = list.filter(r => r.status !== "done").length, p = mk("p", "rv-item");
+    if (!open) p.append(mk("b", "", "\u2713 Replay " + (list.length === 1 ? "review" : "reviews") + " done"));
+    else if (list.length === 1) p.append(mk("b", "", "Replay review requested"), document.createTextNode(" " + [plName(list[0].playlist), "waiting for Coach"].filter(Boolean).join(", ")));
+    else p.append(mk("b", "", open + " replay reviews requested,"), document.createTextNode(" waiting for Coach"));
     return p;
   }
+
   function makeDoneCard() {
     const c = mk("div", "card");
     c.innerHTML =
@@ -675,12 +748,102 @@
   function renderToday() {
     if (!S.me) return;
     const t = S.today, wk = mondayOf(t), w = S.weeks[wk];
-    $("#todayDate").textContent = fmtDate(t, { weekday: "long", month: "long", day: "numeric" });
+    $("#todayLabel").textContent = fmtDate(t, { weekday: "long", month: "short", day: "numeric" });
     const done = (w ? w.sessions : []).filter(s => s.date === t && s.endedAt).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
     const a = S.me.active;
     keyed($("#activeBox"), a ? [a.id] : [], makeActiveCard, c => updateActiveCard(c));
     keyed($("#doneBox"), done.map(s => s.id), makeDoneCard, (c, id) => updateDoneCard(c, done.find(s => s.id === id), wk));
     $("#checkins").hidden = !!a;
+    document.querySelector(".page-home").classList.toggle("is-live", !!a);
+    renderHome();
+  }
+
+  /* ---------- Home: this week, your focus, the coach's last note, what's next ---------- */
+  function finishedSessions() {
+    const out = [];
+    for (const wk of Object.keys(S.weeks)) for (const s of S.weeks[wk].sessions) if (s.endedAt) out.push(s);
+    return out.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  }
+  // What the player said to work on next, from their latest finished session (not the one in progress).
+  function lastFocus(skipId) {
+    const s = finishedSessions().find(x => x.id !== skipId && x.next && x.next.trim());
+    return s ? { text: s.next.trim(), s } : null;
+  }
+  const sessWhen = s => TYPES[s.type].label + ", " + fmtDate(s.date, { weekday: "short", month: "short", day: "numeric" });
+  function renderMeters(box, rows) {
+    box.textContent = "";
+    for (const r of rows) {
+      const met = r.done >= r.target;
+      const m = mk("div", "meter" + (met ? " met" : ""));
+      const top = mk("p", "meter-top");
+      top.append(mk("span", "meter-name", r.label), mk("span", "meter-n", (met ? "✓ " : "") + r.done + " of " + r.target));
+      const bar = mk("div", "meter-bar");
+      bar.setAttribute("aria-hidden", "true");
+      for (let i = 0; i < Math.min(14, Math.max(r.target, r.done)); i++) bar.append(mk("i", i < r.done ? "on" : ""));
+      m.append(top, bar);
+      box.append(m);
+    }
+  }
+  function renderHome() {
+    if (!S.me) return;
+    const wk = mondayOf(S.today), st = weekStats(getWeek(wk), S.me), rows = reqRows(st, S.me, wk), left = remaining(rows);
+    $("#homeWeekLabel").textContent = weekLabel(wk);
+    renderMeters($("#homeReqs"), rows);
+    // Say what's left, not a percentage: the closer the goal, the more it pulls.
+    const daysLeft = 7 - ((parseYmd(S.today).getDay() + 6) % 7), note = $("#homeWeekNote");
+    note.className = "week-note";
+    if (!rows.length) { const n = st.ranked + st.training; note.textContent = n ? n + (n === 1 ? " session" : " sessions") + " logged this week." : "Your roster has no set sessions. Everything you log still counts on Progress."; }
+    else if (!left) { note.textContent = "Week complete. Anything more is extra work."; note.classList.add("good"); }
+    else note.textContent = left + (left === 1 ? " more session" : " more sessions") + " to go, " + (daysLeft === 1 ? "last day of the week." : daysLeft + " days left.");
+    const fx = lastFocus(S.me.active ? S.me.active.id : null), fb = $("#homeFocus");
+    fb.hidden = false; fb.textContent = "";
+    fb.append(mk("p", "card-k", "Your focus"));
+    if (fx) fb.append(mk("p", "focus-text", fx.text), mk("p", "fine", "From your " + sessWhen(fx.s)));
+    else fb.append(mk("p", "fine", "After each session, write one thing to work on next. It shows up here and when you check in."));
+    const cut = addDays(S.today, -14), cn = finishedSessions().find(s => s.coachNote && s.date >= cut), nb = $("#homeNote");
+    nb.hidden = !cn; nb.textContent = "";
+    if (cn) nb.append(mk("p", "card-k", "Coach note"), mk("p", "note-text", cn.coachNote), mk("p", "fine", "On your " + sessWhen(cn)));
+    renderHomeNext();
+  }
+  function renderHomeNext() {
+    const box = $("#homeNext"), win = $("#winNext");
+    const up = feat("schedule") && S.schedAccess ? S.events.filter(e => evMs(e) >= Date.now() - 3 * 3600e3).sort((a, b) => evMs(a) - evMs(b)) : [];
+    win.hidden = !up.length;
+    box.textContent = "";
+    if (!up.length) return;
+    const e = up[0], d = ymd(new Date(e.startsAt));
+    const h = mk("h3", "ev-day", fmtDate(d, { weekday: "short", month: "short", day: "numeric" }));
+    const tag = dayTag(d);
+    if (tag) h.append(mk("span", "ev-tag", tag));
+    const ul = mk("ul", "ev-list");
+    ul.append(evItem(e, false));
+    box.append(h, ul);
+  }
+
+  /* ---------- Progress: focus history ---------- */
+  function renderFocusHistory() {
+    if (!S.me) return;
+    const all = finishedSessions(), list = $("#focusList"), tags = $("#focusTags");
+    list.textContent = "";
+    const items = all.filter(s => s.next && s.next.trim()).slice(0, 8);
+    if (!items.length) list.append(mk("li", "empty", "What you choose to work on after each session builds up here."));
+    for (const s of items) {
+      const li = mk("li", "focus-item");
+      li.append(mk("p", "focus-text", s.next.trim()), mk("p", "fine", sessWhen(s)));
+      if (s.coachNote) { const n = mk("p", "wl-note"); n.append(mk("b", "", "Coach: "), document.createTextNode(s.coachNote)); li.append(n); }
+      list.append(li);
+    }
+    // Training focus areas over the last 8 weeks, most worked on first.
+    const since = addDays(mondayOf(S.today), -49), count = new Map();
+    for (const s of all) if (s.date >= since) for (const f of s.focuses) count.set(f, (count.get(f) || 0) + 1);
+    const top = Array.from(count.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 8);
+    tags.textContent = "";
+    tags.hidden = !top.length;
+    if (!top.length) return;
+    tags.append(mk("p", "card-k", "Training focus, last 8 weeks"));
+    const ul = mk("ul", "tag-list");
+    for (const [f, n] of top) { const li = mk("li", "tag"); li.append(document.createTextNode(f + " "), mk("b", "", "×" + n)); ul.append(li); }
+    tags.append(ul);
   }
 
   function checkIn(type) {
@@ -871,6 +1034,7 @@
     }
     if (!log.children.length) log.append(mk("p", "empty", "No sessions yet."));
     renderPast($("#pastBox"), S.me, getWeek, w2 => { S.wk = w2; renderWeek(); $("#winWeek").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" }); }, wk);
+    renderFocusHistory();
   }
   $("#weekLog").addEventListener("click", e => {
     const b = e.target.closest("button.rm");
@@ -905,8 +1069,9 @@
   }
   // Step line of MMR over the last 8 weeks: earlier weeks muted, this week in scarlet.
   let sparkId = 0;
-  function sparkline(hist, key, now, label) {
-    const W = 120, H = 24, PAD = 3, end = Date.now(), from = end - 56 * 864e5;
+  function sparkline(hist, key, now, label, W, H) {
+    W = W || 120; H = H || 24;
+    const PAD = 4, end = Date.now(), from = end - 56 * 864e5;
     let pts = [], prior = null;
     for (const h of hist) {
       if (h[key] === null) continue;
@@ -916,6 +1081,8 @@
     if (now !== null) pts.push({ t: end, v: now });
     if (pts.length < 2 || pts[pts.length - 1].t - pts[0].t < 60000) return null;
     const vs = pts.map(q => q.v), lo = Math.min(...vs), hi = Math.max(...vs);
+    // A flat line says nothing; leave the space out until the MMR moves.
+    if (hi === lo) return null;
     const t0 = pts[0].t, x = t => PAD + ((t - t0) / (end - t0 || 1)) * (W - PAD * 2);
     const y = v => hi === lo ? H / 2 : PAD + (1 - (v - lo) / (hi - lo)) * (H - PAD * 2);
     let d = "M" + x(pts[0].t).toFixed(1) + " " + y(pts[0].v).toFixed(1);
@@ -939,7 +1106,7 @@
     svg.append(old, cur, dot);
     return svg;
   }
-  function rankRows(list, ranks, hist) {
+  function rankRows(list, ranks, hist, compact) {
     list.textContent = "";
     hist = hist || [];
     for (const p of PL) {
@@ -953,16 +1120,17 @@
       const tr = mk("p", "rank-tier" + (x.tier ? "" : " unset"), x.tier || "\u2014");
       if (x.tier && x.div) tr.append(mk("span", "div", x.div));
       main.append(tr);
-      const sp = sparkline(hist, p.key, x.mmr, p.name + " MMR");
-      if (sp) main.append(sp);
+      const sp = sparkline(hist, p.key, x.mmr, p.name + " MMR", 360, compact ? 36 : 60);
       const nums = mk("div", "rank-nums");
       const mmr = mk("p", "mmr", x.mmr !== null ? x.mmr.toLocaleString("en-US") : "\u2014");
       mmr.append(mk("span", "unit", "MMR"));
       nums.append(mmr);
       const ch = weekChange(hist, p.key, x.mmr);
-      if (ch !== null) nums.append(mk("p", "wk " + (ch > 0 ? "up" : ch < 0 ? "down" : "flat"), (ch > 0 ? "+" : ch < 0 ? "\u2212" : "\u00b1") + Math.abs(ch) + " this week"));
+      if (ch) nums.append(mk("p", "wk " + (ch > 0 ? "up" : "down"), (ch > 0 ? "+" : "\u2212") + Math.abs(ch) + " this week"));
       if (x.games !== null) nums.append(mk("p", "gm", x.games.toLocaleString("en-US") + " games"));
       li.append(badge, main, nums);
+      // The 8-week trend gets the full width: it's the part that shows growth.
+      if (sp) { const tr = mk("div", "trend"); tr.append(sp, mk("p", "trend-k", "8 weeks")); li.append(tr); }
       list.append(li);
     }
   }
@@ -1040,7 +1208,7 @@
 
   /* ---------- Coach: render ---------- */
   function pickPlayer(id) {
-    S.sel = id; renderCoach(); loadHist(id); loadPast(id); setMin($("#winPlayer"), false);
+    S.sel = id; renderCoach(); loadHist(id); loadPast(id);
     if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" });
   }
   function renderCoach() {
@@ -1049,6 +1217,20 @@
     $("#cwLabel").textContent = weekLabel(S.coachWk);
     $("#cwThis").hidden = S.coachWk === thisWk;
     const ids = rosterIds();
+    // Who needs attention, at a glance: still to go, in session, done, and replay reviews waiting.
+    const att = $("#attn");
+    att.textContent = "";
+    if (S.rosterLoaded && ids.length) {
+      const sts = ids.filter(id => S.roster[id].role === "player").map(playerStatus), n = g => sts.filter(x => x.g === g).length;
+      const item = (num, label, cls) => { const p = mk("p", "attn-i" + (cls ? " " + cls : "")); p.append(mk("b", "", String(num)), document.createTextNode(" " + label)); att.append(p); };
+      if (S.coachWk === thisWk) {
+        if (n("live")) item(n("live"), "in session", "live");
+        item(n("open"), "still to go", n("open") ? "todo" : "");
+        item(n("done"), "done");
+      } else { item(n("missed"), "missed", n("missed") ? "todo" : ""); item(n("done"), "done"); }
+      const rv = feat("reviews") ? S.reviews.filter(r => r.status === "open").length : 0;
+      if (rv) { const b = mk("button", "attn-i link"); b.type = "button"; b.dataset.go = "reviews"; b.append(mk("b", "", String(rv)), document.createTextNode(rv === 1 ? " replay review waiting" : " replay reviews waiting")); att.append(b); }
+    }
     $("#rosterEmpty").hidden = !S.rosterLoaded || ids.length > 0;
     const box = $("#rosterList");
     box.hidden = !ids.length;
@@ -1147,9 +1329,11 @@
       S.pdFor = null;
       $("#tPlayer").textContent = "Player";
       body.textContent = "";
-      body.append(mk("p", "empty", "Select a player."));
+      body.append(mk("p", "empty", "Select a player to see their week, ranks and sessions."));
+      $("#winPlayer").classList.add("is-empty");
       return;
     }
+    $("#winPlayer").classList.remove("is-empty");
     if (S.pdFor !== id) { buildPlayerDetail(body, id); S.pdFor = id; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; }
     $("#tPlayer").textContent = p.name;
     $("#pdName").textContent = p.name;
@@ -1172,7 +1356,7 @@
     const st = weekStats(w, p);
     if (feat("ranks")) {
       const ranks = mk("ul", "rank-list");
-      rankRows(ranks, p.ranks, S.hist[id] || []);
+      rankRows(ranks, p.ranks, S.hist[id] || [], true);
       stats.append(ranks);
       const stamp = rankStamp(p.ranks);
       if (stamp) stats.append(mk("p", "fine", stamp));
@@ -1860,9 +2044,9 @@
       box.append(pl);
     }
   }
-  function renderSched() { if (S.me && !$("#winSched").hidden) schedInto($("#schedList"), S.events, false); }
+  function renderSched() { if (S.me && feat("schedule") && S.schedAccess) schedInto($("#schedList"), S.events, false); }
   function renderSchedC() {
-    if (!S.me || S.me.role !== "coach" || $("#winSchedC").hidden) return;
+    if (!S.me || S.me.role !== "coach" || !feat("schedule")) return;
     // A form that's open keeps its place through the 30-second refresh.
     schedInto($("#schedListC"), S.cEvents, true);
   }
@@ -1873,7 +2057,7 @@
       e.mine = status;
       e.rsvps = e.rsvps.filter(r => r.userId !== S.me.id);
       if (status) e.rsvps.push({ userId: S.me.id, name: S.me.name, status });
-      renderSched();
+      renderSched(); renderHomeNext();
     } catch (err) { btn.disabled = false; }
   }
   function localParts(iso) { const d = new Date(iso); return [ymd(d), String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0")]; }
@@ -1953,170 +2137,6 @@
     F("opponent").focus();
   }
   $("#evNew").addEventListener("click", () => { S.evEdit = S.evEdit === "new" ? null : "new"; renderEvForm(); });
-
-  /* ---------- Layout: each person can move sections, make them wide or narrow, and set a height ---------- */
-  const LAYOUT_DEF = {
-    player: [["winToday", 0], ["winWeek", 0], ["winSched", 1], ["winRanks", 1], ["winBoard", 1]],
-    coach: [["winRoster", 0], ["winReviews", 0], ["winBoardC", 0], ["winPlayer", 1], ["winSchedC", 1], ["winSettings", 1]]
-  };
-  function layoutFor(view) {
-    const def = LAYOUT_DEF[view].map(([id, lane]) => ({ id, lane, wide: false, h: "auto" }));
-    const saved = S.me && S.me.prefs.layout[view];
-    if (!saved) return def;
-    const known = new Set(def.map(d => d.id)), out = saved.filter(x => known.has(x.id)).map(x => Object.assign({}, x));
-    // Sections added since this person saved their layout go where they'd be by default: before the next one they have.
-    def.forEach((d, i) => {
-      if (out.some(x => x.id === d.id)) return;
-      const next = def.slice(i + 1).find(n => out.some(x => x.id === n.id));
-      const at = next ? out.findIndex(x => x.id === next.id) : out.length;
-      out.splice(at, 0, Object.assign({}, d));
-    });
-    return out;
-  }
-  function applyLayout(view, force) {
-    const items = layoutFor(view), key = JSON.stringify(items);
-    if (!force && S.layApplied[view] === key) return;
-    S.layApplied[view] = key;
-    const root = document.querySelector((view === "coach" ? "#viewCoach" : "#viewPlayer") + " .cols");
-    const els = {};
-    for (const it of items) els[it.id] = document.getElementById(it.id);
-    // Keep focus and scroll in place while sections move.
-    const fe = document.activeElement, y = window.scrollY;
-    root.textContent = "";
-    let band = null;
-    items.forEach((it, i) => {
-      const el = els[it.id];
-      if (!el) return;
-      el.dataset.h = it.h;
-      el.dataset.lane = String(it.lane);
-      if (it.wide) { const b = mk("div", "band wide"); b.append(el); root.append(b); band = null; return; }
-      if (!band) { band = mk("div", "band"); band.append(mk("div", "col"), mk("div", "col")); band.children[0].dataset.lane = "0"; band.children[1].dataset.lane = "1"; root.append(band); }
-      band.children[it.lane].append(el);
-    });
-    syncLayTools(view, items);
-    if (fe && fe.isConnected && fe !== document.activeElement) { try { fe.focus({ preventScroll: true }); } catch (_) {} }
-    window.scrollTo(0, y);
-  }
-  function saveLayout(view, items) {
-    S.me.prefs.layout[view] = items.map(x => ({ id: x.id, lane: x.lane, wide: x.wide, h: x.h }));
-    queue("me", 400);
-    applyLayout(view, true);
-  }
-  function layTools(win) {
-    let t = win.querySelector(".lay-tools");
-    if (t) return t;
-    t = mk("span", "lay-tools");
-    t.innerHTML = '<button type="button" class="lay-drag" draggable="true" aria-label="Drag to move" title="Drag to move">\u2807</button>' +
-      '<button type="button" data-lay="up" aria-label="Move up">\u2191</button><button type="button" data-lay="down" aria-label="Move down">\u2193</button>' +
-      '<button type="button" data-lay="left" aria-label="Move to left column">\u2190</button><button type="button" data-lay="right" aria-label="Move to right column">\u2192</button>' +
-      '<button type="button" data-lay="wide"></button>' +
-      '<select data-lay="h" aria-label="Height"><option value="auto">Auto height</option><option value="s">Short</option><option value="m">Medium</option><option value="l">Tall</option></select>';
-    const tb = win.querySelector(".tbar"), tm = tb.querySelector(".tmin");
-    tb.insertBefore(t, tm || null);
-    return t;
-  }
-  function syncLayTools(view, items) {
-    for (const it of items) {
-      const el = document.getElementById(it.id);
-      if (!el) continue;
-      const t = layTools(el);
-      t.querySelector('[data-lay="wide"]').textContent = it.wide ? "Narrow" : "Wide";
-      t.querySelector('[data-lay="wide"]').setAttribute("aria-label", it.wide ? "Make narrow" : "Make wide");
-      t.querySelector('[data-lay="left"]').hidden = it.wide || it.lane === 0;
-      t.querySelector('[data-lay="right"]').hidden = it.wide || it.lane === 1;
-      const sel = t.querySelector('[data-lay="h"]');
-      if (document.activeElement !== sel) sel.value = it.h;
-    }
-  }
-  function moveSection(view, id, dir) {
-    const items = layoutFor(view), i = items.findIndex(x => x.id === id);
-    if (i < 0) return;
-    const it = items[i];
-    if ((dir === "up" || dir === "down") && matchMedia("(max-width: 979px)").matches) {
-      // One column (phones): move past the section just above or below on screen.
-      const seen = Array.from(document.querySelectorAll((view === "coach" ? "#viewCoach" : "#viewPlayer") + " .cols .win")).map(w => w.id);
-      const at = seen.indexOf(id), nb = seen[dir === "up" ? at - 1 : at + 1];
-      if (!nb) return;
-      items.splice(i, 1);
-      const j = items.findIndex(x => x.id === nb), other = items[j];
-      it.wide = false;
-      it.lane = other.wide ? (dir === "up" ? 1 : 0) : other.lane;
-      items.splice(dir === "up" ? j : j + 1, 0, it);
-      saveLayout(view, items);
-      return;
-    }
-    // Up and down skip sections in the other column, so a move always changes what you see.
-    const same = x => x.wide || it.wide || x.lane === it.lane;
-    if (dir === "left" || dir === "right") it.lane = dir === "left" ? 0 : 1;
-    else if (dir === "up") { let j = i - 1; while (j >= 0 && !same(items[j])) j--; if (j < 0) return; items.splice(i, 1); items.splice(j, 0, it); }
-    else if (dir === "down") { let j = i + 1; while (j < items.length && !same(items[j])) j++; if (j >= items.length) return; items.splice(i, 1); items.splice(j, 0, it); }
-    else if (dir === "wide") it.wide = !it.wide;
-    saveLayout(view, items);
-  }
-  function setLayEdit(on) {
-    S.layEdit = on;
-    document.body.classList.toggle("lay-on", on);
-    $("#layBar").hidden = !on;
-    document.querySelectorAll(".view .win").forEach(w => layTools(w));
-    renderTaskbar();
-    if (on) $("#layBar").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "nearest" });
-  }
-  $("#layDone").addEventListener("click", () => setLayEdit(false));
-  $("#layReset").addEventListener("click", () => { delete S.me.prefs.layout[S.view]; queue("me", 0); applyLayout(S.view, true); });
-  document.addEventListener("click", e => {
-    const b = e.target.closest("[data-lay]");
-    if (!b || b.tagName === "SELECT" || !S.layEdit) return;
-    moveSection(S.view, b.closest(".win").id, b.dataset.lay);
-  });
-  document.addEventListener("change", e => {
-    const sel = e.target.closest('select[data-lay="h"]');
-    if (!sel) return;
-    const items = layoutFor(S.view), it = items.find(x => x.id === sel.closest(".win").id);
-    if (it) { it.h = sel.value; saveLayout(S.view, items); }
-  });
-  // Drag and drop (mouse): drop on a section to go before it in its column; drop on empty column space to go to the end of that column.
-  let dragId = null;
-  document.addEventListener("dragstart", e => {
-    const h = e.target.closest && e.target.closest(".lay-drag");
-    if (!h || !S.layEdit) return;
-    dragId = h.closest(".win").id;
-    e.dataTransfer.effectAllowed = "move";
-    try { e.dataTransfer.setData("text/plain", dragId); } catch (_) {}
-  });
-  document.addEventListener("dragover", e => {
-    if (!dragId) return;
-    const t = e.target.closest && (e.target.closest(".view .win") || e.target.closest(".view .col"));
-    if (!t) return;
-    e.preventDefault();
-    document.querySelectorAll(".drag-over").forEach(x => x.classList.remove("drag-over"));
-    t.classList.add("drag-over");
-  });
-  document.addEventListener("drop", e => {
-    if (!dragId) return;
-    const t = e.target.closest && (e.target.closest(".view .win") || e.target.closest(".view .col"));
-    document.querySelectorAll(".drag-over").forEach(x => x.classList.remove("drag-over"));
-    if (!t) { dragId = null; return; }
-    e.preventDefault();
-    const items = layoutFor(S.view), from = items.findIndex(x => x.id === dragId), it = items[from];
-    if (from < 0 || t.id === dragId) { dragId = null; return; }
-    items.splice(from, 1);
-    if (t.classList.contains("win")) {
-      const to = items.findIndex(x => x.id === t.id);
-      if (!items[to].wide) it.lane = items[to].lane;
-      items.splice(to, 0, it);
-    } else {
-      // End of a column: after the last section in that band's column, or after the band's last section.
-      const lane = Number(t.dataset.lane) || 0, ids = Array.from(t.parentElement.querySelectorAll(".win")).map(w => w.id).filter(id => id !== dragId);
-      const inLane = Array.from(t.querySelectorAll(".win")).map(w => w.id).filter(id => id !== dragId);
-      const anchor = inLane.length ? inLane[inLane.length - 1] : ids[ids.length - 1];
-      const at = anchor ? items.findIndex(x => x.id === anchor) + 1 : items.length;
-      it.lane = lane; it.wide = false;
-      items.splice(at, 0, it);
-    }
-    dragId = null;
-    saveLayout(S.view, items);
-  });
-  document.addEventListener("dragend", () => { dragId = null; document.querySelectorAll(".drag-over").forEach(x => x.classList.remove("drag-over")); });
 
   /* ---------- App install + notifications ---------- */
   const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
@@ -2248,8 +2268,7 @@
       loadCoach();
       showWin("#winReviews");
     } else if (go === "schedule") {
-      const win = S.me.role === "coach" && S.view === "coach" ? "#winSchedC" : "#winSched";
-      if (!$(win).hidden) showWin(win);
+      if (pageOk("schedule")) setPage("schedule");
     } else if (go === "week") {
       if (S.view !== "player") setView("player");
       const wk = q.get("wk");
@@ -2266,26 +2285,26 @@
     $("#winAuth").hidden = S.phase !== "auth" || S.missing;
     $("#winMissing").hidden = !S.missing;
     if (S.phase === "auth") renderAuth();
-    // Sections a coach turned off, and the schedule for players whose roster doesn't see it.
-    $("#winSched").hidden = !feat("schedule") || !S.schedAccess;
-    $("#winSchedC").hidden = !feat("schedule");
-    $("#winReviews").hidden = !feat("reviews");
-    $("#winRanks").hidden = !feat("ranks");
-    $("#winBoard").hidden = $("#winBoardC").hidden = !feat("board");
     const coach = app && S.me.role === "coach";
     if (!coach && S.view === "coach") S.view = "player";
     if (app && S.me.admin) S.view = "coach";
+    if (app && !pageOk(S.page)) S.page = pagesFor(S.view)[0][0];
+    // Sections a coach turned off, and the schedule for players whose roster doesn't see it.
+    $("#winRanks").hidden = !feat("ranks");
     $("#adminBar").hidden = !(app && S.me.admin);
     if (app && S.me.admin) $("#adminBarText").textContent = "You're managing " + ((S.school && S.school.name) || "this team") + " as the Backpost admin. Changes save for the whole team." + (S.paused ? " This team is paused, so its members can't sign in." : "");
-    $("#viewPlayer").hidden = !(app && S.view === "player");
-    $("#viewCoach").hidden = !(app && S.view === "coach");
-    if (!app) $("#winAccount").hidden = true;
+    const acct = app && S.page === "account";
+    $("#viewPlayer").hidden = !(app && S.view === "player" && !acct);
+    $("#viewCoach").hidden = !(app && S.view === "coach" && !acct);
+    $("#winAccount").hidden = !acct;
+    document.querySelectorAll(".view .page").forEach(pg => { pg.hidden = pg.dataset.page !== S.page; });
+    document.body.dataset.page = app ? S.page : "";
     renderHeader();
     renderConn();
-    renderTaskbar();
+    renderNav();
     renderAppBox();
-    if (!app) { if (S.layEdit) setLayEdit(false); return; }
-    applyLayout(S.view);
+    if (!app) return;
+    renderAccount();
     renderToday(); renderWeek(); renderRanks(); renderSched();
     if (coach) { renderCoach(); renderSchedC(); renderSettingsForm(false); }
   }
@@ -2330,6 +2349,9 @@
     catch (err) { S.phase = "auth"; renderAll(); setStatus($("#authStatus"), err.message, "err"); return; }
     S.phase = "app";
     S.view = S.me.role === "coach" ? (pref.get("view") === "player" && !S.me.admin ? "player" : "coach") : "player";
+    const fromHash = location.hash.slice(1);
+    S.page = fromHash && fromHash !== "account" && pageOk(fromHash) ? fromHash : pagesFor(S.view)[0][0];
+    try { history.replaceState(null, "", location.pathname + location.search + "#" + S.page); } catch (_) {}
     renderAll();
     loadBoard();
     if (S.me.role === "coach") loadCoach();
