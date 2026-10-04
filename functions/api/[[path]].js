@@ -15,7 +15,8 @@ const TIER_BASES = ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Champion
 const TIERS = ["Unranked"].concat(TIER_BASES.flatMap(t => [t + " I", t + " II", t + " III"]), ["Supersonic Legend"]);
 const DIVS = ["Div I", "Div II", "Div III", "Div IV"];
 const TYPES = ["ranked", "training"];
-const TEAMS = ["varsity", "white", "black"];
+// Team is a label only. Casual is for players who aren't on Varsity, White or Black.
+const TEAMS = ["varsity", "white", "black", "casual"];
 const DEFAULT_SETTINGS = {
   title: "Nebraska Esports",
   targets: { ranked: 3, training: 2, minGames: 5, minMinutes: 30 },
@@ -375,7 +376,7 @@ export async function onRequest({ request, env, params }) {
       await db.batch(SCHEMA.map(s => db.prepare(s)));
       const cols = await db.prepare("PRAGMA table_info(users)").all();
       if (!(cols.results || []).some(c => c.name === "team")) await db.prepare("ALTER TABLE users ADD COLUMN team TEXT").run();
-      await db.prepare("UPDATE users SET team = 'varsity' WHERE role = 'player' AND (team IS NULL OR team NOT IN ('varsity', 'white', 'black'))").run();
+      await db.prepare("UPDATE users SET team = 'varsity' WHERE role = 'player' AND (team IS NULL OR team NOT IN (" + TEAMS.map(t => "'" + t + "'").join(", ") + "))").run();
       schemaReady = true;
     }
     const segs = (Array.isArray(params.path) ? params.path : [params.path]).filter(Boolean);
@@ -584,7 +585,7 @@ async function route(db, req, method, segs, body, user) {
       }
       if ("team" in body) {
         if (target.role === "coach") fail(400, "The coach isn't on a roster.");
-        if (!TEAMS.includes(body.team)) fail(400, "Pick Varsity, White, or Black.");
+        if (!TEAMS.includes(body.team)) fail(400, "Pick Varsity, White, Black, or Casual.");
         sets.push("team = ?"); vals.push(body.team);
       }
       if ("trackerUrl" in body) {
