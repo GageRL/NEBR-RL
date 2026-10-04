@@ -194,7 +194,40 @@
     const facts = mk("p", "fine", [sc.players + (sc.players === 1 ? " player" : " players"), sc.coaches + (sc.coaches === 1 ? " coach" : " coaches"), ago(sc.lastActive), "Created " + fmtDay(sc.createdAt)].join("  |  "));
     const out = mk("div", "stack");
     const row = mk("div", "row");
-    const inv = mk("button", "btn sm primary", "Invite a coach"); inv.type = "button";
+    // Opens the team's own app with full coach powers: roster, coaches, schedule, reviews, settings and look.
+    const manage = mk("a", "btn sm primary", "Manage team"); manage.href = "/" + sc.id;
+    const edit = mk("button", "btn sm", "Name and address"); edit.type = "button";
+    edit.addEventListener("click", () => {
+      out.textContent = "";
+      const f = mk("form", "sub"); f.noValidate = true;
+      const nameF = mk("label", "fld"); nameF.append(mk("span", "lbl", "School or team name"));
+      const nIn = mk("input"); nIn.type = "text"; nIn.maxLength = 60; nIn.value = sc.name; nameF.append(nIn);
+      const slugF = mk("label", "fld"); slugF.append(mk("span", "lbl", "Web address"));
+      const pre = mk("span", "addr-row"); pre.append(mk("span", "fine", "getbackpost.com/"));
+      const sIn = mk("input"); sIn.type = "text"; sIn.maxLength = 32; sIn.value = sc.id; sIn.spellcheck = false; sIn.autocomplete = "off";
+      pre.append(sIn); slugF.append(pre);
+      const founder = sc.id === "nebraska";
+      if (founder) sIn.disabled = true;
+      const note = mk("p", "fine", founder ? "Nebraska keeps this address so the original site keeps working." : "Changing the address signs everyone on the team out. Old links and installed apps stop working, so send the team the new address.");
+      const st3 = mk("p", "status"); st3.setAttribute("role", "status");
+      const r3 = mk("div", "row end");
+      const cancel = mk("button", "btn", "Cancel"); cancel.type = "button"; cancel.addEventListener("click", () => { out.textContent = ""; });
+      const save = mk("button", "btn primary", "Save"); save.type = "submit";
+      r3.append(cancel, save);
+      f.append(nameF, slugF, note, st3, r3);
+      f.addEventListener("submit", async ev => {
+        ev.preventDefault();
+        const body = { name: nIn.value.trim() };
+        const want = sIn.value.trim().toLowerCase();
+        if (!founder && want !== sc.id) body.slug = want;
+        save.disabled = true;
+        try { await api("PATCH", "admin/schools/" + sc.id, body); await loadSchools(); }
+        catch (err) { setStatus(st3, err.message, "err"); save.disabled = false; }
+      });
+      out.append(f);
+      nIn.focus();
+    });
+    const inv = mk("button", "btn sm", "Invite a coach"); inv.type = "button";
     inv.addEventListener("click", async () => {
       inv.disabled = true;
       try {
@@ -232,7 +265,7 @@
       out.append(w);
       inp.focus();
     });
-    row.append(inv, pause, rm);
+    row.append(manage, edit, inv, pause, rm);
     c.append(head, facts, row, out);
     return c;
   }

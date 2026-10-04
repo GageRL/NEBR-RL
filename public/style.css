@@ -515,6 +515,15 @@ label.btn{cursor:pointer}
 .app-tip{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;padding:12px 16px;border:2px solid var(--ink);border-radius:var(--r-lg);font-weight:500;background:var(--surface)}
 .app-box{padding-top:4px}
 
+/* ---------- Backpost admin managing a school ---------- */
+.admin-bar{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;padding:12px 16px;border-radius:var(--r-lg);background:var(--ink);color:var(--paper);font-weight:500}
+.admin-bar p{margin:0;max-width:72ch}
+.admin-bar .btn{border-color:var(--paper);color:var(--paper)}
+.admin-bar .btn:hover{background:var(--paper);color:var(--ink)}
+.coach-box{margin-top:22px}
+.sub-h{margin:0 0 8px;font:var(--d-w) 16px/1 var(--display);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.rrow.crow{grid-template-columns:minmax(0,1fr)}
+
 /* ---------- Footer ---------- */
 .powered{display:flex;justify-content:center;padding:26px var(--gutter) calc(26px + env(safe-area-inset-bottom,0px))}
 .powered a{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font:500 13px var(--text);text-decoration:none}

@@ -155,7 +155,7 @@
     return out;
   }
   function normUser(u) {
-    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: typeof u.team === "string" && u.team ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0 };
+    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: typeof u.team === "string" && u.team ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0, admin: u.admin === true };
   }
   function normPrefs(p) {
     const out = { layout: {} }, lay = isPlain(p) && isPlain(p.layout) ? p.layout : {};
@@ -193,7 +193,7 @@
     view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
     removals: {}, myHist: [], hist: {}, pweeks: {}, myReviews: [], reviews: [], layEdit: false, layApplied: {}, noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
-    events: [], schedAccess: false, cEvents: [], evEdit: null, school: null, paused: false, missing: false,
+    events: [], schedAccess: false, cEvents: [], evEdit: null, school: null, paused: false, missing: false, adminSkip: false,
     undo: [], saveErr: null, settingsDirty: false, lookPreview: false, board: null
   };
 
@@ -206,6 +206,8 @@
     renderConn();
   }
   async function runOp(key) {
+    // The admin has no account in this team, so their layout stays on this device.
+    if (key === "me" && S.me.admin) { pref.set("adminPrefs", JSON.stringify(S.me.prefs)); return; }
     if (key === "me") return api("PATCH", "me", { active: S.me.active, customFocus: S.me.customFocus, prefs: S.me.prefs });
     if (key.startsWith("w:")) {
       const wk = key.slice(2);
@@ -412,7 +414,8 @@
     box.textContent = "";
     if (S.phase !== "app") return;
     const add = (label, cls, pressed, fn) => { const b = mk("button", "task " + cls, label); b.type = "button"; if (pressed !== null) b.setAttribute("aria-pressed", String(pressed)); b.addEventListener("click", fn); box.append(b); };
-    if (S.me.role === "coach") {
+    // The Backpost admin only has the coach view (no training of their own here).
+    if (S.me.role === "coach" && !S.me.admin) {
       add("Coach", "view", S.view === "coach", () => setView("coach"));
       add("My Training", "view", S.view === "player", () => setView("player"));
       box.append(mk("span", "tsep"));
@@ -421,7 +424,8 @@
     for (const [label, sel] of secs) if (!$(sel).hidden) add(label, "sec", null, () => showWin(sel));
     rvBadge();
     add("Layout", "sec lay", S.layEdit, () => setLayEdit(!S.layEdit));
-    add(S.me.name || "Account", "acct", null, openAccount);
+    if (S.me.admin) add("Admin", "acct", null, () => { location.href = "/admin"; });
+    else add(S.me.name || "Account", "acct", null, openAccount);
   }
 
   // Number of replay reviews waiting, on the Reviews tab (updated in place so focus stays put).
@@ -479,6 +483,15 @@
       $("#pwCur").value = ""; $("#pwNew").value = "";
       setStatus(st, "Password changed.", "ok");
     } catch (err) { setStatus(st, err.message, "err"); }
+  });
+  // The admin can still sign in with a team account here (that sign-in comes first once it exists).
+  $("#adminMember").addEventListener("click", () => {
+    flushAll();
+    S.adminSkip = true;
+    S.phase = "auth"; S.me = null; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.reviews = []; S.cEvents = []; S.evEdit = null; S.layEdit = false;
+    renderAll();
+    setStatus($("#authStatus"), "Sign in with your team account. You stay signed in as the Backpost admin.", "");
+    $("#authName").focus();
   });
   $("#signOff").addEventListener("click", async () => {
     flushAll();
@@ -1026,6 +1039,10 @@
   }
 
   /* ---------- Coach: render ---------- */
+  function pickPlayer(id) {
+    S.sel = id; renderCoach(); loadHist(id); loadPast(id); setMin($("#winPlayer"), false);
+    if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" });
+  }
   function renderCoach() {
     if (!S.me || S.me.role !== "coach") return;
     const thisWk = mondayOf(S.today);
@@ -1055,8 +1072,24 @@
       if (x.g === "live") pill.title = TYPES[p.active.type].label + " \u00b7 " + fmtDur(elapsedMin(p.active.startedAt));
       const PT = targetsFor(p, S.coachWk);
       b.append(nm, cell(x.st.ranked, PT.ranked), cell(x.st.training, PT.training), pill);
-      b.addEventListener("click", () => { S.sel = x.id; renderCoach(); loadHist(x.id); loadPast(x.id); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
+      b.addEventListener("click", () => pickPlayer(x.id));
       box.append(b);
+    }
+    // Coach accounts, listed under the players (the admin manages them from here).
+    const coaches = Object.keys(S.roster).filter(id => S.roster[id].role === "coach")
+      .sort((x, y) => S.roster[x].name.localeCompare(S.roster[y].name, "en", { sensitivity: "base" }));
+    $("#coachBox").hidden = !S.rosterLoaded || !coaches.length;
+    const cl = $("#coachList");
+    cl.textContent = "";
+    for (const id of coaches) {
+      const b = mk("button", "rrow crow");
+      b.type = "button";
+      if (S.sel === id) b.setAttribute("aria-current", "true");
+      const nm = mk("span", "rname", S.roster[id].name);
+      if (id === S.me.id) nm.append(mk("span", "bteam", "You"));
+      b.append(nm);
+      b.addEventListener("click", () => pickPlayer(id));
+      cl.append(b);
     }
     renderPlayerDetail();
     renderReviews();
@@ -1368,8 +1401,10 @@
       f.elements.namedItem("pname").value = cur.name;
       f.elements.namedItem("ptracker").value = cur.trackerUrl;
     });
-    if (p.role === "player") btn("Password", "", () => {
-      const f = form("New password", '<label class="fld"><span class="sr">New password</span><span class="pw-row"><input type="text" name="pw" maxlength="128" autocomplete="off" spellcheck="false"><button type="button" class="btn sm" data-gen>New</button></span></label>', "Set password", async f2 => {
+    // Coach accounts are handled by the Backpost admin: password, remove, coach or player.
+    const admin = !!(S.me && S.me.admin);
+    if (p.role === "player" || admin) btn("Password", "", () => {
+      const f = form("New password", '<label class="fld"><span class="sr">New password</span><span class="pw-row"><input type="text" name="pw" maxlength="128" autocomplete="off" spellcheck="false"><button type="button" class="btn sm" data-gen>New</button></span></label>' + (S.roster[id].role === "coach" ? '<p class="fine">They\'re signed out everywhere and use this password next time.</p>' : ""), "Set password", async f2 => {
         const pw = f2.elements.pw.value;
         if (await patch({ password: pw }, "")) showCopy(status, S.roster[id].name, pw);
       });
@@ -1413,11 +1448,22 @@
         f.elements[q.key + "-games"].value = x.games === null ? "" : String(x.games);
       }
     });
-    if (p.role === "player") {
+    if (admin) btn(p.role === "coach" ? "Make player" : "Make coach", "", () => {
+      const toCoach = S.roster[id].role !== "coach";
+      const f = form(toCoach ? "Make coach" : "Make player",
+        '<p class="fine">' + (toCoach ? S.roster[id].name + " gets the coach view: roster, schedule, reviews and settings." : S.roster[id].name + " loses the coach view and joins a roster.") + "</p>" +
+        (toCoach ? "" : '<label class="fld"><span class="lbl">Roster</span><select name="prole-team"></select></label>'),
+        toCoach ? "Make coach" : "Make player", async f2 => {
+          const ok = await patch(toCoach ? { role: "coach" } : { role: "player", team: f2.elements.namedItem("prole-team").value }, toCoach ? "Now a coach." : "Now a player.");
+          if (ok) { S.pdFor = null; renderCoach(); setStatus($("#pdStatus"), toCoach ? "Now a coach." : "Now a player.", "ok"); }
+        });
+      if (!toCoach) { const sel = f.elements.namedItem("prole-team"); rosterList().forEach(r => sel.append(new Option(r.name, r.id))); sel.value = (rosterList().find(r => !r.casual) || rosterList()[0]).id; }
+    });
+    if (p.role === "player" || admin) {
       const rm = btn("Remove", "danger push", () => {
         closeAll(); setStatus(status, "");
         const box = mk("div", "warnbox");
-        box.append(mk("p", "", "Remove " + S.roster[id].name + " and all their data?"));
+        box.append(mk("p", "", "Remove " + S.roster[id].name + (S.roster[id].role === "coach" ? "'s coach account?" : " and all their data?")));
         const row = mk("div", "row end");
         const no = mk("button", "btn", "Cancel"); no.type = "button"; no.addEventListener("click", closeAll);
         const yes = mk("button", "btn primary", "Remove"); yes.type = "button";
@@ -1430,7 +1476,7 @@
         box.append(row);
         forms.append(box);
       });
-      rm.setAttribute("aria-label", "Remove player");
+      rm.setAttribute("aria-label", p.role === "coach" ? "Remove coach" : "Remove player");
     }
     if (p.role === "player") {
       const tr = mk("label", "pd-team");
@@ -1457,7 +1503,7 @@
     const b = mk("button", "btn sm", "Copy");
     b.type = "button";
     b.addEventListener("click", async () => {
-      try { await navigator.clipboard.writeText("Name: " + name + "\nPassword: " + pw + "\n" + location.origin); b.textContent = "Copied"; }
+      try { await navigator.clipboard.writeText("Name: " + name + "\nPassword: " + pw + "\n" + location.origin + (ROUTE.base === "/" ? "" : ROUTE.base)); b.textContent = "Copied"; }
       catch (_) { const r = document.createRange(); r.selectNodeContents(code); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
     });
     box.append(code, b);
@@ -1473,22 +1519,27 @@
       sel.textContent = "";
       rosterList().forEach(r => sel.append(new Option(r.name, r.id)));
       sel.value = (rosterList().find(r => !r.casual) || rosterList()[0]).id;
+      // Only the Backpost admin can add a coach account here.
+      $("#addRoleRow").hidden = !S.me.admin; $("#addRole").value = "player"; $("#addTeamRow").hidden = false;
       $("#addPw").value = genPassword(); setStatus($("#addStatus"), ""); $("#addName").focus();
     }
   });
-  $("#addGen").addEventListener("click", () => { $("#addPw").value = genPassword(); });
+  const addPwFor = () => genPassword() + ($("#addRole").value === "coach" ? genPassword().slice(0, 4) : "");
+  $("#addRole").addEventListener("change", () => { $("#addTeamRow").hidden = $("#addRole").value === "coach"; $("#addPw").value = addPwFor(); });
+  $("#addGen").addEventListener("click", () => { $("#addPw").value = addPwFor(); });
   $("#addCancel").addEventListener("click", () => { $("#addForm").hidden = true; });
   $("#addForm").addEventListener("submit", async e => {
     e.preventDefault();
     const st = $("#addStatus");
     const name = $("#addName").value.trim(), pw = $("#addPw").value, tracker = $("#addTracker").value.trim(), team = $("#addTeam").value;
+    const role = S.me.admin && $("#addRole").value === "coach" ? "coach" : "player";
     if (!name) { setStatus(st, "Enter a name.", "err"); return; }
     try {
-      const r = await api("POST", "coach/players", { name, password: pw, trackerUrl: tracker, team });
+      const r = await api("POST", "coach/players", Object.assign({ name, password: pw, trackerUrl: tracker }, role === "coach" ? { role } : { team }));
       const u = normUser(r.player);
       S.roster[u.id] = u;
       showCopy(st, u.name, pw);
-      $("#addName").value = ""; $("#addTracker").value = ""; $("#addPw").value = genPassword();
+      $("#addName").value = ""; $("#addTracker").value = ""; $("#addPw").value = addPwFor();
       $("#addName").focus();
       renderCoach();
     } catch (err) { setStatus(st, err.message, "err"); }
@@ -2126,7 +2177,7 @@
   function renderAppTip() {
     const tip = $("#appTip");
     let kind = "", text = "", go = "";
-    if (S.phase === "app" && isPhone()) {
+    if (S.phase === "app" && isPhone() && !S.me.admin) {
       if (!standalone() && pref.get("tip:install") !== "0") {
         kind = "install"; go = installEvt ? "Install" : "";
         text = isIOS ? "Get the app: tap Share, then Add to Home Screen." : installEvt ? "Get the app on your home screen." : "Get the app: open your browser menu and tap Add to Home screen.";
@@ -2182,7 +2233,7 @@
   });
   // A device that already allowed notifications is re-linked to whoever is signed in.
   function syncPush() {
-    if (pushSynced || !S.me || !pushSub || !pushOK() || Notification.permission !== "granted") return;
+    if (pushSynced || !S.me || S.me.admin || !pushSub || !pushOK() || Notification.permission !== "granted") return;
     pushSynced = true;
     api("POST", "push/subscribe", pushSub.toJSON()).catch(() => { pushSynced = false; });
   }
@@ -2223,6 +2274,9 @@
     $("#winBoard").hidden = $("#winBoardC").hidden = !feat("board");
     const coach = app && S.me.role === "coach";
     if (!coach && S.view === "coach") S.view = "player";
+    if (app && S.me.admin) S.view = "coach";
+    $("#adminBar").hidden = !(app && S.me.admin);
+    if (app && S.me.admin) $("#adminBarText").textContent = "You're managing " + ((S.school && S.school.name) || "this team") + " as the Backpost admin. Changes save for the whole team." + (S.paused ? " This team is paused, so its members can't sign in." : "");
     $("#viewPlayer").hidden = !(app && S.view === "player");
     $("#viewCoach").hidden = !(app && S.view === "coach");
     if (!app) $("#winAccount").hidden = true;
@@ -2245,6 +2299,7 @@
     if (rv) S.myReviews = (rv.reviews || []).map(normReview);
     const fresh = normUser(me.me);
     if (dirty.has("me") && S.me) { fresh.active = S.me.active; fresh.customFocus = S.me.customFocus; fresh.prefs = S.me.prefs; }
+    if (fresh.admin) { let saved = null; try { saved = JSON.parse(pref.get("adminPrefs") || "null"); } catch (_) {} fresh.prefs = S.me && S.me.admin ? S.me.prefs : normPrefs(saved); }
     S.me = fresh;
     const next = {};
     for (const x of wk.weeks || []) {
@@ -2270,11 +2325,11 @@
     S.school = st.school || null;
     S.paused = !!st.paused;
     S.settings = normSettings(st.settings);
-    if (!st.me) { S.phase = "auth"; renderAll(); $("#authName").focus(); return; }
+    if (!st.me || (st.me.admin && S.adminSkip)) { S.phase = "auth"; renderAll(); $("#authName").focus(); return; }
     try { await loadMine(); }
     catch (err) { S.phase = "auth"; renderAll(); setStatus($("#authStatus"), err.message, "err"); return; }
     S.phase = "app";
-    S.view = S.me.role === "coach" ? (pref.get("view") === "player" ? "player" : "coach") : "player";
+    S.view = S.me.role === "coach" ? (pref.get("view") === "player" && !S.me.admin ? "player" : "coach") : "player";
     renderAll();
     loadBoard();
     if (S.me.role === "coach") loadCoach();
