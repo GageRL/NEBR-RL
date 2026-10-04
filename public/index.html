@@ -34,7 +34,22 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="/style.css">
+<script>
+/* If a script fails to load or run (for example an old cached copy), fetch fresh copies and reload once,
+   instead of leaving the page on "Loading...". */
+(function () {
+  var tried = false;
+  window.addEventListener("error", function (e) {
+    if (tried || !/\/(app|site)\.js/.test(e.filename || "")) return;
+    tried = true;
+    try { if (sessionStorage.getItem("bp:recovered")) return; sessionStorage.setItem("bp:recovered", "1"); } catch (_) { return; }
+    var urls = [location.href];
+    document.querySelectorAll("script[src],link[rel=stylesheet]").forEach(function (n) { urls.push(n.src || n.href); });
+    Promise.all(urls.map(function (u) { return fetch(u, { cache: "reload" }).catch(function () {}); })).then(function () { location.reload(); });
+  });
+})();
+</script>
+<link rel="stylesheet" href="/style.css?v=59d891b486">
 </head>
 <body>
 
@@ -495,7 +510,7 @@
   <footer class="powered"><a href="https://getbackpost.com">Powered by <img src="/bp/mark.png" alt="" width="31" height="26"> <span>Backpost</span></a></footer>
 </div>
 
-<script src="/app.js" defer></script>
-<script src="/site.js" defer></script>
+<script src="/app.js?v=02a211239d" defer></script>
+<script src="/site.js?v=3e50744e85" defer></script>
 </body>
 </html>

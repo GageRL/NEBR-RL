@@ -1,3 +1,7 @@
-/sw.js
+# Every file is checked for a newer copy on each visit (a quick "not modified" when nothing changed),
+# so a browser never runs an old script against a new page.
+/*
   Cache-Control: no-cache
+
+/sw.js
   Service-Worker-Allowed: /
