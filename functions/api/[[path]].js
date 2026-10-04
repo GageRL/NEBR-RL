@@ -22,7 +22,8 @@ const DEFAULT_SETTINGS = {
   title: "Nebraska Esports",
   targets: { ranked: 3, training: 2, minGames: 5, minMinutes: 30 },
   rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } },
-  targetsLog: []
+  targetsLog: [],
+  schedTeams: ["varsity", "white", "black"]
 };
 
 const SCHEMA = [
@@ -89,7 +90,28 @@ const SCHEMA = [
      created_at INTEGER NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id)`,
-  `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)`
+  `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS events (
+     id TEXT PRIMARY KEY,
+     kind TEXT NOT NULL,
+     opponent TEXT NOT NULL,
+     starts_at INTEGER NOT NULL,
+     format TEXT,
+     details TEXT,
+     link TEXT,
+     teams TEXT NOT NULL,
+     result TEXT,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS events_start ON events(starts_at)`,
+  `CREATE TABLE IF NOT EXISTS rsvps (
+     event_id TEXT NOT NULL,
+     user_id TEXT NOT NULL,
+     status TEXT NOT NULL,
+     at INTEGER NOT NULL,
+     PRIMARY KEY (event_id, user_id)
+   )`
 ];
 const HISTORY_DAYS = 120;
 let schemaReady = false;
@@ -235,6 +257,7 @@ function normSettings(raw) {
     }
   }
   s.targetsLog = normTeamLog(raw.targetsLog);
+  if (Array.isArray(raw.schedTeams)) s.schedTeams = TEAMS.filter(t => raw.schedTeams.includes(t));
   return s;
 }
 function normPlaylist(x) {
@@ -512,6 +535,52 @@ async function coachIds(db, except) {
   return results.map(r => r.id).filter(id => id !== except);
 }
 
+/* ---------- Schedule: scrims and matches, each for one or more rosters ---------- */
+const EVENT_KINDS = { scrim: "Scrim", match: "Match" };
+const RSVP = ["in", "maybe", "out"];
+const SCHED_PAST_MS = 45 * 864e5;
+function normEvent(b) {
+  const kind = EVENT_KINDS[b.kind] ? b.kind : "scrim";
+  const opponent = cleanText(b.opponent, 60).replace(/\s+/g, " ").trim();
+  if (!opponent) fail(400, "Enter the opponent (or TBD).");
+  const at = Date.parse(String(b.startsAt || ""));
+  if (!Number.isFinite(at) || Math.abs(at - Date.now()) > 730 * 864e5) fail(400, "Pick a date and time.");
+  const teams = TEAMS.filter(t => Array.isArray(b.teams) && b.teams.includes(t));
+  if (!teams.length) fail(400, "Pick at least one roster.");
+  const rawLink = String(b.link || "").trim().slice(0, 300);
+  let link = "";
+  if (rawLink) {
+    try { const u = new URL(/^https?:\/\//i.test(rawLink) ? rawLink : "https://" + rawLink); if (!/^https?:$/.test(u.protocol)) throw 0; link = u.toString(); }
+    catch (_) { fail(400, "That link doesn't look right."); }
+  }
+  return { kind, opponent, startsAt: at, format: cleanText(b.format, 40).trim(), details: cleanText(b.details, 1000).trim(), link, teams, result: cleanText(b.result, 40).trim() };
+}
+function pubEvent(r, rs, me) {
+  const mine = rs.filter(x => x.event_id === r.id);
+  const out = {
+    id: r.id, kind: r.kind, opponent: r.opponent, startsAt: new Date(r.starts_at).toISOString(), format: r.format || "", details: r.details || "",
+    link: r.link || "", teams: parse(r.teams, []), result: r.result || "",
+    rsvps: mine.map(x => ({ userId: x.user_id, name: x.username, status: x.status }))
+  };
+  if (me) { const m = mine.find(x => x.user_id === me); out.mine = m ? m.status : ""; }
+  return out;
+}
+async function eventsWithRsvps(db, rows, me) {
+  if (!rows.length) return [];
+  const ids = rows.map(r => r.id);
+  const { results } = await db.prepare("SELECT r.event_id, r.user_id, r.status, u.username FROM rsvps r JOIN users u ON u.id = r.user_id WHERE r.event_id IN (" + ids.map(() => "?").join(", ") + ") ORDER BY r.at").bind(...ids).all();
+  return rows.map(r => pubEvent(r, results, me));
+}
+const fmtWhen = ms => new Date(ms).toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Players who can see an event: on one of its rosters, and that roster can see the Schedule.
+async function eventAudience(db, teams) {
+  const st = await getSettings(db), ok = teams.filter(t => st.schedTeams.includes(t));
+  if (!ok.length) return [];
+  const { results } = await db.prepare("SELECT id FROM users WHERE role = 'player' AND team IN (" + ok.map(() => "?").join(", ") + ")").bind(...ok).all();
+  return results.map(r => r.id);
+}
+const canSeeSched = (u, st) => u.role === "player" && st.schedTeams.includes(u.team);
+
 async function route(db, req, method, segs, body, user, later) {
   const [a, b, c] = segs;
   const key = method + " " + [a, b].filter(Boolean).join("/");
@@ -566,6 +635,24 @@ async function route(db, req, method, segs, body, user, later) {
     if (sets.length) await db.prepare("UPDATE users SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, user.id).run();
     const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(user.id).first();
     return json({ me: pub(u) });
+  }
+  /* Schedule (players see their roster's events; the coach uses coach/events) */
+  if (key === "GET events") {
+    const st = await getSettings(db);
+    if (!canSeeSched(user, st)) return json({ access: false, events: [] });
+    const { results } = await db.prepare("SELECT * FROM events WHERE starts_at >= ? ORDER BY starts_at LIMIT 300").bind(Date.now() - SCHED_PAST_MS).all();
+    const rows = results.filter(r => parse(r.teams, []).includes(user.team));
+    return json({ access: true, events: await eventsWithRsvps(db, rows, user.id) });
+  }
+  if (a === "events" && b && c === "rsvp" && method === "PUT") {
+    const st = await getSettings(db);
+    const ev = await db.prepare("SELECT * FROM events WHERE id = ?").bind(b).first();
+    if (!ev || !canSeeSched(user, st) || !parse(ev.teams, []).includes(user.team)) fail(404, "That event isn't on your schedule.");
+    if (ev.starts_at < Date.now() - 6 * 3600e3) fail(400, "That one already happened.");
+    const status = RSVP.includes(body.status) ? body.status : "";
+    if (status) await db.prepare("INSERT INTO rsvps (event_id, user_id, status, at) VALUES (?, ?, ?, ?) ON CONFLICT(event_id, user_id) DO UPDATE SET status = excluded.status, at = excluded.at").bind(b, user.id, status, Date.now()).run();
+    else await db.prepare("DELETE FROM rsvps WHERE event_id = ? AND user_id = ?").bind(b, user.id).run();
+    return json({ ok: true, status });
   }
   /* Push notifications for this device */
   if (key === "GET push/key") return json({ key: (await vapidKeys(db)).publicKey });
@@ -749,6 +836,7 @@ async function route(db, req, method, segs, body, user, later) {
           db.prepare("DELETE FROM rank_history WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM reviews WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM push_subs WHERE user_id = ?").bind(c),
+          db.prepare("DELETE FROM rsvps WHERE user_id = ?").bind(c),
           db.prepare("DELETE FROM users WHERE id = ?").bind(c)
         ]);
         return json({ ok: true });
@@ -806,6 +894,35 @@ async function route(db, req, method, segs, body, user, later) {
       }
       await db.prepare("INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data").bind(JSON.stringify(s)).run();
       return json({ settings: s });
+    }
+    if (key === "GET coach/events") {
+      const { results } = await db.prepare("SELECT * FROM events WHERE starts_at >= ? ORDER BY starts_at LIMIT 300").bind(Date.now() - SCHED_PAST_MS).all();
+      return json({ events: await eventsWithRsvps(db, results, null) });
+    }
+    if (key === "POST coach/events") {
+      const e = normEvent(body), id = newId(), now = Date.now();
+      await db.prepare("INSERT INTO events (id, kind, opponent, starts_at, format, details, link, teams, result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(id, e.kind, e.opponent, e.startsAt, e.format, e.details, e.link, JSON.stringify(e.teams), e.result, now, now).run();
+      if (e.startsAt > now) later(eventAudience(db, e.teams).then(ids => notify(db, ids, { title: "New " + EVENT_KINDS[e.kind].toLowerCase() + ": vs " + e.opponent, body: fmtWhen(e.startsAt) + (e.format ? " \u00b7 " + e.format : ""), url: "/?go=schedule", tag: "ev-" + id })));
+      const row = await db.prepare("SELECT * FROM events WHERE id = ?").bind(id).first();
+      return json({ event: pubEvent(row, [], null) });
+    }
+    if (b === "events" && c && method === "PUT") {
+      const prev = await db.prepare("SELECT * FROM events WHERE id = ?").bind(c).first();
+      if (!prev) fail(404, "That event no longer exists.");
+      const e = normEvent(body);
+      await db.prepare("UPDATE events SET kind = ?, opponent = ?, starts_at = ?, format = ?, details = ?, link = ?, teams = ?, result = ?, updated_at = ? WHERE id = ?")
+        .bind(e.kind, e.opponent, e.startsAt, e.format, e.details, e.link, JSON.stringify(e.teams), e.result, Date.now(), c).run();
+      // Only a new time is worth a notification (and only for events still ahead).
+      if (e.startsAt !== prev.starts_at && e.startsAt > Date.now()) later(eventAudience(db, e.teams).then(ids => notify(db, ids, { title: EVENT_KINDS[e.kind] + " moved: vs " + e.opponent, body: "Now " + fmtWhen(e.startsAt), url: "/?go=schedule", tag: "ev-" + c })));
+      const row = await db.prepare("SELECT * FROM events WHERE id = ?").bind(c).first();
+      return json({ event: (await eventsWithRsvps(db, [row], null))[0] });
+    }
+    if (b === "events" && c && method === "DELETE") {
+      const prev = await db.prepare("SELECT * FROM events WHERE id = ?").bind(c).first();
+      await db.batch([db.prepare("DELETE FROM rsvps WHERE event_id = ?").bind(c), db.prepare("DELETE FROM events WHERE id = ?").bind(c)]);
+      if (prev && prev.starts_at > Date.now()) later(eventAudience(db, parse(prev.teams, [])).then(ids => notify(db, ids, { title: EVENT_KINDS[prev.kind] + " canceled: vs " + prev.opponent, body: "Was " + fmtWhen(prev.starts_at), url: "/?go=schedule", tag: "ev-" + c })));
+      return json({ ok: true });
     }
     if (key === "GET coach/reviews") {
       const { results } = await db.prepare("SELECT r.*, u.username FROM reviews r JOIN users u ON u.id = r.user_id ORDER BY (r.status = 'open') DESC, r.created_at DESC LIMIT 200").all();
