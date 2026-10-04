@@ -20,7 +20,8 @@ const TEAMS = ["varsity", "white", "black", "casual"];
 const DEFAULT_SETTINGS = {
   title: "Nebraska Esports",
   targets: { ranked: 3, training: 2, minGames: 5, minMinutes: 30 },
-  rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
+  rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } },
+  targetsLog: []
 };
 
 const SCHEMA = [
@@ -34,6 +35,7 @@ const SCHEMA = [
      ranks TEXT,
      active TEXT,
      custom_focus TEXT,
+     targets TEXT,
      fail_count INTEGER NOT NULL DEFAULT 0,
      locked_until INTEGER NOT NULL DEFAULT 0,
      created_at INTEGER NOT NULL
@@ -159,6 +161,33 @@ async function currentUser(db, req) {
 }
 
 /* ---------- data shapes ---------- */
+/* Weekly requirements are kept as a log of { from: Monday, ... } entries. An entry applies from its
+   week on, so changing a requirement never rewrites past weeks. */
+const LOG_START = "2000-01-03";
+const isWeek = v => /^\d{4}-\d{2}-\d{2}$/.test(v || "");
+const intIn = (v, max) => Math.min(max, Math.max(0, Math.round(Number(v) || 0)));
+function normTeamLog(list) {
+  return (Array.isArray(list) ? list : []).filter(e => isPlain(e) && isWeek(e.from))
+    .map(e => ({ from: e.from, ranked: intIn(e.ranked, 14), training: intIn(e.training, 14), minGames: intIn(e.minGames, 60), minMinutes: intIn(e.minMinutes, 300) }))
+    .sort((a, b) => a.from.localeCompare(b.from)).slice(-200);
+}
+function normPlayerLog(list) {
+  const own = v => (v === null || v === undefined || v === "" ? null : intIn(v, 14));
+  return (Array.isArray(list) ? list : []).filter(e => isPlain(e) && isWeek(e.from))
+    .map(e => ({ from: e.from, ranked: own(e.ranked), training: own(e.training) }))
+    .sort((a, b) => a.from.localeCompare(b.from)).slice(-200);
+}
+// The week a change applies from: the Monday the coach's device sent (if it's within a week of now), else this UTC week.
+function weekFrom(v) {
+  const now = Date.now();
+  if (isWeek(v)) { const t = Date.parse(v + "T00:00:00Z"); if (Math.abs(t - now) < 9 * 864e5 && new Date(t).getUTCDay() === 1) return v; }
+  const d = new Date(now); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+function logPut(log, entry, seed) {
+  const out = log.length ? log.slice() : [seed];
+  return out.filter(e => e.from !== entry.from).concat([entry]).sort((a, b) => a.from.localeCompare(b.from)).slice(-200);
+}
 function normSettings(raw) {
   const s = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   if (!isPlain(raw)) return s;
@@ -181,6 +210,7 @@ function normSettings(raw) {
       s.rankedGoals[p] = { min, max };
     }
   }
+  s.targetsLog = normTeamLog(raw.targetsLog);
   return s;
 }
 function normPlaylist(x) {
@@ -233,6 +263,7 @@ function pub(u) {
     ranks: normRanks(parse(u.ranks, {})),
     active: parse(u.active, null),
     customFocus: parse(u.custom_focus, []),
+    targetsLog: normPlayerLog(parse(u.targets, [])),
     createdAt: u.created_at
   };
 }
@@ -376,6 +407,7 @@ export async function onRequest({ request, env, params }) {
       await db.batch(SCHEMA.map(s => db.prepare(s)));
       const cols = await db.prepare("PRAGMA table_info(users)").all();
       if (!(cols.results || []).some(c => c.name === "team")) await db.prepare("ALTER TABLE users ADD COLUMN team TEXT").run();
+      if (!(cols.results || []).some(c => c.name === "targets")) await db.prepare("ALTER TABLE users ADD COLUMN targets TEXT").run();
       await db.prepare("UPDATE users SET team = 'varsity' WHERE role = 'player' AND (team IS NULL OR team NOT IN (" + TEAMS.map(t => "'" + t + "'").join(", ") + "))").run();
       schemaReady = true;
     }
@@ -560,6 +592,10 @@ async function route(db, req, method, segs, body, user) {
       await db.prepare("UPDATE weeks SET data = ?, updated_at = ? WHERE user_id = ? AND week = ?").bind(JSON.stringify(d), Date.now(), c, wk).run();
       return json({ ok: true, session: s });
     }
+    if (b === "players" && c && segs[3] === "weeks" && method === "GET") {
+      const { results } = await db.prepare("SELECT week, data FROM weeks WHERE user_id = ? ORDER BY week DESC LIMIT 80").bind(c).all();
+      return json({ weeks: results.map(r => ({ week: r.week, data: parse(r.data, {}) })) });
+    }
     if (b === "players" && c && segs[3] === "history" && method === "GET") {
       return json({ history: await readHistory(db, c) });
     }
@@ -600,6 +636,13 @@ async function route(db, req, method, segs, body, user) {
         sets.push("pw_hash = ?", "fail_count = 0", "locked_until = 0"); vals.push(await makePw(pw));
         extra.push(db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(c));
       }
+      if ("targets" in body) {
+        if (target.role === "coach") fail(400, "The coach doesn't have a weekly requirement.");
+        const t = isPlain(body.targets) ? body.targets : {};
+        const own = v => (v === null || v === undefined || v === "" ? null : intIn(v, 14));
+        const log = logPut(normPlayerLog(parse(target.targets, [])), { from: weekFrom(body.from), ranked: own(t.ranked), training: own(t.training) }, { from: LOG_START, ranked: null, training: null });
+        sets.push("targets = ?"); vals.push(JSON.stringify(log));
+      }
       let newRanks = null;
       if ("ranks" in body) { newRanks = applyRanks(parse(target.ranks, {}), body.ranks, false); sets.push("ranks = ?"); vals.push(JSON.stringify(newRanks)); }
       if (sets.length) await db.batch([db.prepare("UPDATE users SET " + sets.join(", ") + " WHERE id = ?").bind(...vals, c)].concat(extra));
@@ -613,7 +656,13 @@ async function route(db, req, method, segs, body, user) {
       return json({ week: wk, weeks: results.map(r => ({ userId: r.user_id, data: parse(r.data, {}) })) });
     }
     if (key === "PUT coach/settings") {
+      const prev = await getSettings(db);
       const s = normSettings(body.settings);
+      s.targetsLog = prev.targetsLog;
+      const keys = ["ranked", "training", "minGames", "minMinutes"];
+      if (keys.some(k => s.targets[k] !== prev.targets[k])) {
+        s.targetsLog = logPut(prev.targetsLog, Object.assign({ from: weekFrom(body.from) }, s.targets), Object.assign({ from: LOG_START }, prev.targets));
+      }
       await db.prepare("INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data").bind(JSON.stringify(s)).run();
       return json({ settings: s });
     }

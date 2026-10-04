@@ -217,6 +217,18 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--scarlet)
 .wl-line .rm{margin-left:auto;font-size:12px}
 .wl-note,.pd-refl.cn{font-style:italic;padding:6px 10px;border-left:3px solid var(--scarlet);border-radius:0 8px 8px 0;background:var(--tint);font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere}
 
+/* Past weeks: one line per week, click to open it */
+.past-box{display:grid;padding-top:14px}
+.past-box:empty{display:none}
+.past-box h3{margin-bottom:6px;font:700 17px var(--display);text-transform:uppercase;letter-spacing:.03em}
+.past-row{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr) minmax(0,.9fr) 56px;align-items:baseline;gap:8px;width:100%;padding:9px 0;border:0;border-top:2px solid var(--line);background:none;color:inherit;text-align:left;font:400 13px var(--text)}
+.past-row:hover{background:var(--tint)}
+.past-row[aria-current="true"]{box-shadow:inset 4px 0 0 var(--scarlet);padding-left:10px}
+.past-wk{font:600 14px var(--display);text-transform:uppercase;letter-spacing:.03em}
+.past-st{justify-self:end;font-weight:600}
+.past-row.met .past-st::before{content:"✓ "}
+@media (max-width:560px){.past-row{grid-template-columns:auto auto 1fr auto;grid-template-areas:"wk wk wk st" "r t g g";column-gap:12px;row-gap:2px}.past-wk{grid-area:wk}.past-st{grid-area:st}.past-n:nth-child(2){grid-area:r}.past-n:nth-child(3){grid-area:t}.past-g{grid-area:g}}
+
 /* ---------- Ranks ---------- */
 .rank-list{display:grid}
 .rank{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:14px;padding:12px 0;border-top:2px solid var(--line)}

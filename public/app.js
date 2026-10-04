@@ -19,7 +19,8 @@
   const DEFAULT_SETTINGS = {
     title: "Nebraska Esports",
     targets: { ranked: 3, training: 2, minGames: 5, minMinutes: 30 },
-    rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } }
+    rankedGoals: { duel: { min: 5, max: 10 }, doubles: { min: 15, max: 20 }, standard: { min: null, max: null } },
+    targetsLog: []
   };
   const LONG_SESSION_MIN = 360;
   const REFL = [["well", ""], ["cost", ""], ["next", ""]];
@@ -97,7 +98,16 @@
       const g = isPlain(raw.rankedGoals[p.key]) ? raw.rankedGoals[p.key] : {};
       s.rankedGoals[p.key] = { min: numOrNull(g.min), max: numOrNull(g.max) };
     }
+    s.targetsLog = normLog(raw.targetsLog, true);
     return s;
+  }
+  // Requirement history: entries apply from their Monday on (team entries carry all four numbers; a player's carry overrides or null).
+  function normLog(list, team) {
+    const n = (v, max) => Math.min(max, Math.max(0, Math.round(Number(v) || 0)));
+    const own = v => (v === null || v === undefined ? null : n(v, 14));
+    return (Array.isArray(list) ? list : []).filter(e => isPlain(e) && /^\d{4}-\d{2}-\d{2}$/.test(e.from))
+      .map(e => team ? { from: e.from, ranked: n(e.ranked, 14), training: n(e.training, 14), minGames: n(e.minGames, 60), minMinutes: n(e.minMinutes, 300) } : { from: e.from, ranked: own(e.ranked), training: own(e.training) })
+      .sort((a, b) => a.from.localeCompare(b.from));
   }
   function blankGames() { return { duel: { w: 0, l: 0 }, doubles: { w: 0, l: 0 }, standard: { w: 0, l: 0 } }; }
   function normActive(a) {
@@ -118,7 +128,7 @@
     return out;
   }
   function normUser(u) {
-    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: TEAMS.some(t => t[0] === u.team) ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], createdAt: Number(u.createdAt) || 0 };
+    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: TEAMS.some(t => t[0] === u.team) ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), createdAt: Number(u.createdAt) || 0 };
   }
   function normSession(s) {
     const g = blankGames();
@@ -147,7 +157,7 @@
     settings: normSettings(null), me: null, weeks: {},
     view: "player", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
-    removals: {}, myHist: [], hist: {}, noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
+    removals: {}, myHist: [], hist: {}, pweeks: {}, noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
     undo: [], saveErr: null, settingsDirty: false, board: null
   };
 
@@ -238,28 +248,39 @@
   /* ---------- Week math: finished sessions count toward the weekly requirement ---------- */
   function gamesIn(s) { return PL.reduce((a, p) => a + s.games[p.key].w + s.games[p.key].l, 0); }
   // A finished session counts toward the week once it clears its type's minimum.
-  function counts(s, team) {
+  // The requirement that applied in week wk: the team's entry for that week, the player's own numbers on top.
+  function logAt(log, wk) { let hit = null; for (const e of log) { if (e.from <= wk) hit = e; else break; } return hit || log[0] || null; }
+  function targetsFor(user, wk) {
+    const team = logAt(S.settings.targetsLog, wk) || S.settings.targets;
+    const T = { ranked: team.ranked, training: team.training, minGames: team.minGames, minMinutes: team.minMinutes, custom: false, free: !!user && freeTeam(user.team) };
+    const own = user && user.targetsLog ? logAt(user.targetsLog, wk) : null;
+    if (own && own.ranked !== null) { T.ranked = own.ranked; T.custom = true; }
+    if (own && own.training !== null) { T.training = own.training; T.custom = true; }
+    if (T.free) { T.ranked = 0; T.training = 0; T.custom = false; }
+    return T;
+  }
+  function counts(s, user) {
     if (!s.endedAt) return false;
-    if (freeTeam(team)) return true;
-    const T = S.settings.targets;
+    const T = targetsFor(user, mondayOf(s.date));
+    if (T.free) return true;
     return s.type === "ranked" ? gamesIn(s) >= T.minGames : s.minutes >= T.minMinutes;
   }
-  function shortReason(s) { const T = S.settings.targets; return s.type === "ranked" ? "under " + T.minGames + " games" : "under " + T.minMinutes + " min"; }
-  function weekStats(w, team) {
+  function shortReason(s, user) { const T = targetsFor(user, mondayOf(s.date)); return s.type === "ranked" ? "under " + T.minGames + " games" : "under " + T.minMinutes + " min"; }
+  function weekStats(w, user) {
     const st = { ranked: 0, training: 0, games: blankGames(), hasAny: false };
     for (const s of w ? w.sessions : []) {
       st.hasAny = true;
       if (!s.endedAt) continue;
       for (const p of PL) { st.games[p.key].w += s.games[p.key].w; st.games[p.key].l += s.games[p.key].l; }
-      if (!counts(s, team)) continue;
+      if (!counts(s, user)) continue;
       if (s.type === "ranked") st.ranked++;
       else if (s.type === "training") st.training++;
     }
     return st;
   }
-  function reqRows(st, team) {
-    const T = S.settings.targets, rows = [];
-    if (freeTeam(team)) return rows;
+  function reqRows(st, user, wk) {
+    const T = targetsFor(user, wk), rows = [];
+    if (T.free) return rows;
     if (T.ranked > 0) rows.push({ key: "ranked", label: "Ranked Sessions", target: T.ranked, done: st.ranked });
     if (T.training > 0) rows.push({ key: "training", label: "Training", target: T.training, done: st.training });
     return rows;
@@ -342,7 +363,7 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.needsSetup = false;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.needsSetup = false;
     setStatus($("#authStatus"), "Signed out. Sign on again.", "err");
     renderAll();
   }
@@ -464,9 +485,9 @@
     c.querySelector(".sec-warm").hidden = !(isRanked || isTrain);
     c.querySelectorAll(".sec-ranked").forEach(x => { x.hidden = !isRanked; });
     c.querySelector(".sec-focus").hidden = !isTrain;
-    const T = S.settings.targets, hint = c.querySelector(".counts-hint");
+    const T = targetsFor(S.me, a.week), hint = c.querySelector(".counts-hint");
     const have = isRanked ? (s ? gamesIn(s) : 0) : elapsedMin(a.startedAt), need = isRanked ? T.minGames : T.minMinutes;
-    hint.hidden = need <= 0 || freeTeam(S.me.team);
+    hint.hidden = need <= 0 || T.free;
     hint.classList.toggle("ok", have >= need);
     hint.textContent = have >= need ? "\u2713 Counts toward the week" : isRanked ? "Counts at " + need + " games \u00b7 " + have + " so far" : "Counts after " + need + " min";
     const rf = reflFor(a.type);
@@ -518,7 +539,7 @@
     const sum = sessionSummary(s), sumEl = c.querySelector(".csum");
     sumEl.textContent = sum;
     sumEl.hidden = !sum;
-    c.querySelector(".nc").textContent = counts(s, S.me.team) ? "" : "Doesn't count: " + shortReason(s);
+    c.querySelector(".nc").textContent = counts(s, S.me) ? "" : "Doesn't count: " + shortReason(s, S.me);
     fillReadOnly(c.querySelector(".ro"), s);
   }
   function renderToday() {
@@ -630,13 +651,34 @@
     }
   });
 
+  /* ---------- Past weeks: one line per finished week, newest first (12 weeks) ---------- */
+  function renderPast(box, user, weekOf, pick, current) {
+    box.textContent = "";
+    const thisWk = mondayOf(S.today), first = user.createdAt ? mondayOf(ymd(new Date(user.createdAt))) : thisWk, list = [];
+    for (let wk = addDays(thisWk, -7); wk >= first && list.length < 12; wk = addDays(wk, -7)) list.push(wk);
+    if (!list.length) return;
+    box.append(mk("h3", "", "Past weeks"));
+    const frac = (done, target) => target > 0 ? done + "/" + target : String(done);
+    for (const wk of list) {
+      const st = weekStats(weekOf(wk), user), T = targetsFor(user, wk), rows = reqRows(st, user, wk);
+      const games = PL.reduce((a, q) => a + st.games[q.key].w + st.games[q.key].l, 0);
+      const status = rows.length ? (remaining(rows) ? "Missed" : "Done") : "";
+      const b = mk("button", "past-row" + (status === "Done" ? " met" : ""));
+      b.type = "button";
+      if (wk === current) b.setAttribute("aria-current", "true");
+      b.append(mk("span", "past-wk", weekLabel(wk)), mk("span", "past-n", "Ranked " + frac(st.ranked, T.ranked)), mk("span", "past-n", "Training " + frac(st.training, T.training)), mk("span", "past-g", games + " games"), mk("span", "past-st", status));
+      b.addEventListener("click", () => pick(wk));
+      box.append(b);
+    }
+  }
+
   /* ---------- My Week: progress + finished sessions ---------- */
   function renderWeek() {
     if (!S.me) return;
     const wk = S.wk, thisWk = mondayOf(S.today);
     $("#wkLabel").textContent = weekLabel(wk);
     $("#wkThis").hidden = wk === thisWk;
-    const w = getWeek(wk), rows = reqRows(weekStats(w, S.me.team), S.me.team);
+    const w = getWeek(wk), rows = reqRows(weekStats(w, S.me), S.me, wk);
     renderReqs($("#reqBox"), rows);
     const v = $("#verdict"), left = remaining(rows);
     if (rows.length && !left) { v.textContent = "\u2713 Week complete"; v.className = "verdict good"; }
@@ -650,12 +692,12 @@
       const day = mk("div", "wl-day" + (d === S.today ? " is-today" : ""));
       day.append(mk("p", "wl-date", fmtDate(d, { weekday: "short", month: "short", day: "numeric" })));
       for (const s of ses) {
-        const ok = counts(s, S.me.team);
+        const ok = counts(s, S.me);
         const line = mk("div", "wl-line" + (s.endedAt ? (ok ? "" : " nc") : " live"));
         line.append(mk("span", "", (s.endedAt ? (ok ? "\u2713 " : "\u2013 ") : "\u25cf ") + TYPES[s.type].label + " \u00b7 " + (s.endedAt ? fmtDur(s.minutes) : "now")));
         const sum = s.endedAt ? sessionSummary(s) : "";
         if (sum) line.append(mk("span", "wl-sum", sum));
-        if (s.endedAt && !ok) line.append(mk("span", "wl-nc", "doesn't count (" + shortReason(s) + ")"));
+        if (s.endedAt && !ok) line.append(mk("span", "wl-nc", "doesn't count (" + shortReason(s, S.me) + ")"));
         if (s.endedAt) {
           const rb = mk("button", "linkbtn rm", "Remove");
           rb.type = "button";
@@ -669,6 +711,7 @@
       log.append(day);
     }
     if (!log.children.length) log.append(mk("p", "empty", "No sessions yet."));
+    renderPast($("#pastBox"), S.me, getWeek, w2 => { S.wk = w2; renderWeek(); $("#winWeek").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" }); }, wk);
   }
   $("#weekLog").addEventListener("click", e => {
     const b = e.target.closest("button.rm");
@@ -790,7 +833,15 @@
     } catch (_) {}
     finally { coachLoading = false; }
     renderCoach();
-    if (S.sel) loadHist(S.sel);
+    if (S.sel) { loadHist(S.sel); loadPast(S.sel); }
+  }
+  async function loadPast(id) {
+    try {
+      const r = await api("GET", "coach/players/" + id + "/weeks"), m = {};
+      for (const x of r.weeks || []) if (/^\d{4}-\d{2}-\d{2}$/.test(x.week)) m[x.week] = normWeek(x.data, x.week);
+      S.pweeks[id] = m;
+    } catch (_) { return; }
+    if (S.sel === id) renderPlayerDetail();
   }
   async function loadHist(id) {
     try { const r = await api("GET", "coach/players/" + id + "/history"); S.hist[id] = normHist(r.history); }
@@ -804,7 +855,7 @@
   // Status for the viewed week. Same requirement for everyone except Casual players, who have none.
   function playerStatus(id) {
     const p = S.roster[id], w = S.rosterWeeks[id] || normWeek(null, S.coachWk), wk = S.coachWk, thisWk = mondayOf(S.today);
-    const st = weekStats(w, p.team), rows = reqRows(st, p.team), left = remaining(rows);
+    const st = weekStats(w, p), rows = reqRows(st, p, wk), left = remaining(rows);
     const isNew = p.createdAt && ymd(new Date(p.createdAt)) > addDays(wk, 6);
     if (freeTeam(p.team)) return { g: p.active && wk === thisWk ? "live" : isNew ? "notyet" : "free", left: 0, st };
     let g = "open";
@@ -840,7 +891,6 @@
       head.append(mk("span", "", "Player"), mk("span", "", "Ranked"), mk("span", "", "Training"), mk("span", "", "Status"));
       box.append(head);
     }
-    const T = S.settings.targets;
     const rows = ids.map(id => Object.assign({ id }, playerStatus(id))).sort((x, y) =>
       STATUS_RANK[x.g] - STATUS_RANK[y.g] || y.left - x.left || S.roster[x.id].name.localeCompare(S.roster[y.id].name, "en", { sensitivity: "base" }));
     const cell = (done, target) => mk("span", "rc" + (target > 0 && done >= target ? " met" : ""), target > 0 ? done + "/" + target : String(done));
@@ -853,9 +903,9 @@
       if (p.team) nm.append(mk("span", "bteam", teamName(p.team)));
       const pill = mk("span", "pill " + x.g, statusLabel(x));
       if (x.g === "live") pill.title = TYPES[p.active.type].label + " \u00b7 " + fmtDur(elapsedMin(p.active.startedAt));
-      const free = freeTeam(p.team);
-      b.append(nm, cell(x.st.ranked, free ? 0 : T.ranked), cell(x.st.training, free ? 0 : T.training), pill);
-      b.addEventListener("click", () => { S.sel = x.id; renderCoach(); loadHist(x.id); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
+      const PT = targetsFor(p, S.coachWk);
+      b.append(nm, cell(x.st.ranked, PT.ranked), cell(x.st.training, PT.training), pill);
+      b.addEventListener("click", () => { S.sel = x.id; renderCoach(); loadHist(x.id); loadPast(x.id); setMin($("#winPlayer"), false); if (matchMedia("(max-width: 979px)").matches) $("#winPlayer").scrollIntoView({ block: "start" }); });
       box.append(b);
     }
     renderPlayerDetail();
@@ -886,24 +936,25 @@
     stats.textContent = "";
     if (p.active && S.coachWk === mondayOf(S.today)) stats.append(mk("p", "status err", "● " + TYPES[p.active.type].label + " · since " + fmtClock(p.active.startedAt)));
     const w = S.rosterWeeks[id] || normWeek(null, S.coachWk);
-    const st = weekStats(w, p.team);
+    const st = weekStats(w, p);
     const ranks = mk("ul", "rank-list");
     rankRows(ranks, p.ranks, S.hist[id] || []);
     stats.append(ranks);
     const stamp = rankStamp(p.ranks);
     if (stamp) stats.append(mk("p", "fine", stamp));
     if (!p.trackerUrl) stats.append(mk("p", "fine", "No tracker link"));
-    const rows = reqRows(st, p.team);
+    const rows = reqRows(st, p, S.coachWk);
     const reqs = mk("div", "reqs");
     renderReqs(reqs, rows);
     stats.append(reqs);
+    if (targetsFor(p, S.coachWk).custom) stats.append(mk("p", "fine", "Own requirement this week"));
     for (const d of weekDates(S.coachWk)) {
       const ses = w.sessions.filter(s => s.date === d).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
       if (!ses.length) continue;
       const dayBox = mk("div", "pd-day");
       dayBox.append(mk("h4", "", fmtDate(d, { weekday: "long", month: "short", day: "numeric" })));
       for (const s of ses) {
-        const ok = counts(s, p.team);
+        const ok = counts(s, p);
         const sb = mk("div", "pd-sess" + (s.endedAt ? (ok ? "" : " nc") : " live"));
         sb.append(mk("p", "pd-line", (s.endedAt ? (ok ? "✓ " : "– ") : "● ") + TYPES[s.type].label + " · " + (s.endedAt ? fmtClock(s.startedAt) + "–" + fmtClock(s.endedAt) + " · " + fmtDur(s.minutes) + (s.edited ? " · edited" : "") + (s.coachEditedAt ? " · coach edited" : "") : "since " + fmtClock(s.startedAt))));
         if (s.endedAt && S.editOpen === s.id) {
@@ -916,7 +967,7 @@
         }
         const sum = sessionSummary(s);
         if (sum) sb.append(mk("p", "pd-line muted", sum));
-        if (s.endedAt && !ok) sb.append(mk("p", "nc", "Doesn't count: " + shortReason(s)));
+        if (s.endedAt && !ok) sb.append(mk("p", "nc", "Doesn't count: " + shortReason(s, p)));
         const addRefl = (label, text) => { if (!text.trim()) return; const r = mk("p", "pd-refl"); r.append(mk("b", "", label + ": "), document.createTextNode(text.trim())); sb.append(r); };
         const rf = reflFor(s.type);
         addRefl(rf.notes, s.did);
@@ -975,6 +1026,9 @@
       stats.append(dayBox);
     }
     if (!st.hasAny) stats.append(mk("p", "empty", "Nothing this week."));
+    const past = mk("div", "past-box");
+    if (S.pweeks[id]) renderPast(past, p, w2 => S.pweeks[id][w2] || normWeek(null, w2), w2 => coachWeek(w2), S.coachWk);
+    stats.append(past);
     if (S.editOpen && !editFound) { S.editOpen = null; S.editEl = null; }
     if (focusEdit && focusEdit.el.isConnected) { focusEdit.el.focus(); try { focusEdit.el.setSelectionRange(focusEdit.a, focusEdit.b); } catch (_) {} }
     if (focusNote) {
@@ -1120,6 +1174,23 @@
       f.elements.pw.value = genPassword();
       f.querySelector("[data-gen]").addEventListener("click", () => { f.elements.pw.value = genPassword(); });
     });
+    if (p.role === "player") btn("Requirement", "", () => {
+      const cur = S.roster[id], T = targetsFor(cur, mondayOf(S.today));
+      const inner = freeTeam(cur.team)
+        ? '<p class="fine">Casual players have no set sessions. Move them to a team to give them a requirement.</p>'
+        : '<div class="ef-grid"><label>Ranked Sessions<input type="number" name="rq-ranked" min="0" max="14" step="1"></label><label>Training sessions<input type="number" name="rq-training" min="0" max="14" step="1"></label></div>' +
+          '<p class="fine">Applies from this week on. Past weeks keep theirs.</p><div class="row"><button type="button" class="linkbtn" data-team>Use the team requirement</button></div>';
+      const f = form("Weekly requirement", inner, "Save", async f2 => {
+        if (freeTeam(S.roster[id].team)) return;
+        const v = n => { const x = f2.elements.namedItem(n).value.trim(); return x === "" ? null : Math.min(14, n0(x)); };
+        await patch({ targets: { ranked: v("rq-ranked"), training: v("rq-training") }, from: mondayOf(S.today) }, "Requirement saved.");
+      });
+      if (!freeTeam(cur.team)) {
+        f.elements.namedItem("rq-ranked").value = String(T.ranked);
+        f.elements.namedItem("rq-training").value = String(T.training);
+        f.querySelector("[data-team]").addEventListener("click", () => patch({ targets: { ranked: null, training: null }, from: mondayOf(S.today) }, "Back on the team requirement."));
+      }
+    });
     btn("Ranks", "", () => {
       const cur = S.roster[id].ranks;
       const inner = PL.map(q => '<fieldset class="ef"><legend>' + q.name + '</legend><div class="ef-grid">' +
@@ -1249,7 +1320,7 @@
     for (const p of PL) goals[p.key] = { min: $("#g-" + p.key + "-min").value, max: $("#g-" + p.key + "-max").value };
     const draft = { title: $("#setTitle").value.trim(), targets: { ranked: $("#setRanked").value, training: $("#setTraining").value, minGames: $("#setMinGames").value, minMinutes: $("#setMinMinutes").value }, rankedGoals: goals };
     try {
-      const r = await api("PUT", "coach/settings", { settings: draft });
+      const r = await api("PUT", "coach/settings", { settings: draft, from: mondayOf(S.today) });
       S.settings = normSettings(r.settings);
       S.settingsDirty = false;
       renderSettingsForm(true);
