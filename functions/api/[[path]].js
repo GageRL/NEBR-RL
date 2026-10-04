@@ -645,7 +645,8 @@ async function migrateV2(db) {
     delete s.schedTeams;
     const cols = "id, username, role, team, pw_hash, tracker_url, ranks, active, custom_focus, targets, prefs, fail_count, locked_until, created_at";
     await db.batch([
-      db.prepare("INSERT OR IGNORE INTO schools (id, name, status, created_at) VALUES (?, ?, 'active', ?)").bind(LEGACY_SCHOOL, title, Date.now()),
+      // The program's name (the app's own title, e.g. "Rocket League", stays in its settings).
+      db.prepare("INSERT OR IGNORE INTO schools (id, name, status, created_at) VALUES (?, ?, 'active', ?)").bind(LEGACY_SCHOOL, "Nebraska Esports", Date.now()),
       db.prepare("INSERT OR IGNORE INTO school_settings (school_id, data) VALUES (?, ?)").bind(LEGACY_SCHOOL, JSON.stringify(s)),
       db.prepare(TABLES[3].replace("IF NOT EXISTS users", "IF NOT EXISTS users_v2")),
       db.prepare("INSERT INTO users_v2 (school_id, " + cols + ") SELECT '" + LEGACY_SCHOOL + "', " + cols + " FROM users"),
