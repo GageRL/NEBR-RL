@@ -273,6 +273,10 @@
             <fieldset class="grp"><legend>Who sees the schedule</legend>
               <div class="checks" id="schedRosterBox"></div>
             </fieldset>
+            <fieldset class="grp"><legend>Reminders</legend>
+              <label class="chk"><input type="checkbox" data-feat="reminders"> Send reminders</label>
+              <p class="fine">To anyone with notifications on: 2 hours before each event, the evening before to anyone who hasn't answered, and Thursday evening to players still short on sessions.</p>
+            </fieldset>
           </div>
 
           <div class="tabp" data-panel="look" role="tabpanel" hidden>
@@ -354,6 +358,16 @@
         <p class="fine">Coaches can play too. On a roster you get its schedule, the weekly requirement and a spot on the team board, like any player.</p>
         <label class="fld acc-team"><span class="lbl">You play on</span><select id="accTeam"></select></label>
         <p class="status" id="accTeamStatus" role="status"></p>
+      </div>
+    </div>
+    <div class="wbody" id="accCal" hidden>
+      <div class="grp">
+        <h3>Calendar</h3>
+        <p class="fine">Put your schedule in your phone's calendar. New events, time changes and cancellations show up on their own. Google Calendar can take a few hours to catch a change, so Backpost's notifications are the fastest way to hear about last-minute moves.</p>
+        <div class="row cal-row"><a class="btn sm primary" id="calGoogle" target="_blank" rel="noopener">Add to Google Calendar</a><a class="btn sm" id="calApple">Add to Apple Calendar</a><button type="button" class="btn sm" id="calCopy">Copy link</button></div>
+        <p class="fine">Google Calendar: add it once from a computer and it shows in the Google Calendar app on your phone too.</p>
+        <p class="status" id="calStatus" role="status"></p>
+        <p class="fine">The link is private to you. If it gets shared, <button type="button" class="linkbtn" id="calReset">make a new link</button> and the old one stops working.</p>
       </div>
     </div>
     <form class="wbody" id="pwForm" novalidate>
@@ -530,7 +544,7 @@
   <footer class="powered"><a href="https://getbackpost.com">Powered by <img src="/bp/mark.png" alt="" width="31" height="26"> <span>Backpost</span></a></footer>
 </div>
 
-<script src="/app.js?v=20c248b192" defer></script>
+<script src="/app.js?v=3620d17c45" defer></script>
 <script src="/site.js?v=3e50744e85" defer></script>
 </body>
 </html>

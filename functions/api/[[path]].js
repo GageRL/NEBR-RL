@@ -21,7 +21,7 @@ const LOCK_AFTER = 8;
 const LOCK_MS = 10 * 60 * 1000;
 const LEGACY_SCHOOL = "nebraska";
 const LEGACY_HOSTS = ["nebr-rl.pages.dev"];
-const SCHEMA_VERSION = "3";
+const SCHEMA_VERSION = "4";
 
 const PL = ["duel", "doubles", "standard"];
 const TIER_BASES = ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Champion", "Grand Champion"];
@@ -39,7 +39,7 @@ const BACKPOST_THEME = { primary: "#4289d1", secondary: "#ed8727", paper: "clean
 const NEBRASKA_THEME = { primary: "#d00000", secondary: "", paper: "cream", fonts: "classic", shape: "rounded", header: "color" };
 const DEFAULT_ROSTERS = [{ id: "varsity", name: "Varsity", casual: false }, { id: "jv", name: "JV", casual: false }, { id: "casual", name: "Casual", casual: true }];
 const NEBRASKA_ROSTERS = [{ id: "varsity", name: "Varsity", casual: false }, { id: "white", name: "White", casual: false }, { id: "black", name: "Black", casual: false }, { id: "casual", name: "Casual", casual: true }];
-const FEATURES = ["reviews", "schedule", "ranks", "board"];
+const FEATURES = ["reviews", "schedule", "ranks", "board", "reminders"];
 
 const DEFAULT_SETTINGS = {
   title: "",
@@ -48,7 +48,7 @@ const DEFAULT_SETTINGS = {
   targetsLog: [],
   rosters: DEFAULT_ROSTERS,
   schedRosters: null,
-  features: { reviews: true, schedule: true, ranks: true, board: true },
+  features: { reviews: true, schedule: true, ranks: true, board: true, reminders: true },
   theme: BACKPOST_THEME,
   logo: "",
   icon: "",
@@ -89,7 +89,8 @@ const TABLES = [
      locked_until INTEGER NOT NULL DEFAULT 0,
      created_at INTEGER NOT NULL,
      plays_since INTEGER,
-     subs TEXT
+     subs TEXT,
+     cal_ver INTEGER NOT NULL DEFAULT 0
    )`,
   `CREATE TABLE IF NOT EXISTS sessions (
      token_hash TEXT PRIMARY KEY,
@@ -149,6 +150,8 @@ const TABLES = [
      series_id TEXT,
      slot TEXT
    )`,
+  // Reminders already sent (each one goes out once), kept for 40 days.
+  `CREATE TABLE IF NOT EXISTS sent (k TEXT PRIMARY KEY, at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS series (
      id TEXT PRIMARY KEY,
      school_id TEXT NOT NULL,
@@ -210,6 +213,7 @@ const INDEXES = [
   // One event per series per day, even if two visits fill the series at the same moment.
   `CREATE UNIQUE INDEX IF NOT EXISTS events_series_slot ON events(series_id, slot) WHERE series_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS series_school ON series(school_id)`,
+  `CREATE INDEX IF NOT EXISTS sent_at ON sent(at)`,
   `CREATE INDEX IF NOT EXISTS invites_school ON invites(school_id)`,
   `CREATE INDEX IF NOT EXISTS access_requests_time ON access_requests(created_at)`
 ];
@@ -661,6 +665,8 @@ async function migrateV2(db, prev) {
   for (const c of ["team", "targets", "prefs", "subs"]) if (!userCols.includes(c)) await db.prepare("ALTER TABLE users ADD COLUMN " + c + " TEXT").run();
   // When a coach started playing on a roster (schema 3); earlier weeks don't count against them.
   if (!userCols.includes("plays_since")) await db.prepare("ALTER TABLE users ADD COLUMN plays_since INTEGER").run();
+  // Which calendar link is current (schema 4); a new link bumps it, so the old one stops working.
+  if (!userCols.includes("cal_ver")) await db.prepare("ALTER TABLE users ADD COLUMN cal_ver INTEGER NOT NULL DEFAULT 0").run();
   userCols = await columns(db, "users");
   if (!userCols.includes("school_id")) {
     // The original single-school database: everything in it belongs to Nebraska.
@@ -716,6 +722,15 @@ export async function onRequest({ request, env, params, waitUntil }) {
     const ctx = { db, req: request, method, body: body || {}, later, origin: url.origin, env };
     const legacyHosts = (env.LEGACY_HOSTS ? String(env.LEGACY_HOSTS).split(",") : LEGACY_HOSTS).map(h => h.trim()).filter(Boolean);
 
+    // Reminders also ride on ordinary traffic, as a backstop for the scheduled call (at most every 5 minutes per server).
+    if (!env.TEST_CLOCK && Date.now() - lastTickTry > 5 * 60000) { lastTickTry = Date.now(); later(tick(db, Date.now())); }
+    if (segs[0] === "tick" && segs.length === 1 && method === "POST") {
+      // Tests may set the clock; the live site never has TEST_CLOCK.
+      const testNow = env.TEST_CLOCK && Number.isFinite(Number(ctx.body.now)) ? Number(ctx.body.now) : 0;
+      const sent = testNow ? await runReminders(db, testNow) : await tick(db, Date.now());
+      return json(sent === null ? { ran: false } : { ran: true, sent: env.TEST_CLOCK ? sent : sent.map(x => ({ school: x.school, kind: x.kind, to: x.to.length })) });
+    }
+    if (segs[0] === "cal" && segs.length === 2 && method === "GET") return await calFeed(ctx, segs[1]);
     if (segs[0] === "admin") return await adminRoute(ctx, segs.slice(1));
     if (segs[0] === "join") return await joinRoute(ctx, segs.slice(1));
     if (segs[0] === "public") return await publicRoute(ctx, segs.slice(1));
@@ -955,6 +970,180 @@ async function fillSeries(db, school, st) {
   }
 }
 
+/* ---------- Reminders ----------
+   Three kinds, each sent once (claimed in `sent` first, so two runs at once can't both send):
+   - about 2 hours before an event: to everyone on its rosters who hasn't said Out;
+   - the evening before (7 PM, the team's time zone): to anyone who hasn't answered;
+   - Thursday 6 PM: to players still short on their weekly sessions.
+   A run happens at most once a minute: from a scheduled call to /api/tick (every 10 minutes) and,
+   as a backstop, from ordinary traffic. A school can turn reminders off in Settings. */
+const SOON_MS = 2 * 3600e3, ASK_AT = "19:00", WEEK_NUDGE = { day: 4, at: "18:00" };
+async function claim(db, k, now) {
+  const r = await db.prepare("INSERT OR IGNORE INTO sent (k, at) VALUES (?, ?)").bind(k, now).run();
+  return !!(r.meta && r.meta.changes);
+}
+function clockIn(ms, tz) { return new Date(ms).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }); }
+function dayWord(ms, now, tz) {
+  const d = ymdIn(ms, tz), t = ymdIn(now, tz);
+  if (d === t) return "Today";
+  if (d === addDaysYmd(t, 1)) return "Tomorrow";
+  return new Date(ms).toLocaleDateString("en-US", { timeZone: tz, weekday: "long" });
+}
+function untilText(ms) {
+  const m = Math.round(ms / 60000);
+  return m >= 90 ? "in about 2 hours" : m >= 45 ? "in about an hour" : "in " + Math.max(1, m) + " minutes";
+}
+// The week's requirement for one person, and how many sessions they still need (same rules as the app).
+function weekLeft(st, u, wk, data) {
+  const at = (log, w) => { let hit = null; for (const e of log) { if (e.from <= w) hit = e; else break; } return hit || log[0] || null; };
+  const team = at(st.targetsLog, wk) || st.targets, own = at(normPlayerLog(parse(u.targets, [])), wk);
+  const T = { ranked: team.ranked, training: team.training, minGames: team.minGames, minMinutes: team.minMinutes };
+  if (own && own.ranked !== null) T.ranked = own.ranked;
+  if (own && own.training !== null) T.training = own.training;
+  let ranked = 0, training = 0;
+  for (const x of isPlain(data) && Array.isArray(data.sessions) ? data.sessions : []) {
+    if (!isPlain(x) || !x.endedAt) continue;
+    if (x.type === "ranked") { let g = 0; for (const p of PL) { const v = isPlain(x.games) && isPlain(x.games[p]) ? x.games[p] : {}; g += (Number(v.w) || 0) + (Number(v.l) || 0); } if (g >= T.minGames) ranked++; }
+    else if (x.type === "training" && (Number(x.minutes) || 0) >= T.minMinutes) training++;
+  }
+  return { ranked: Math.max(0, T.ranked - ranked), training: Math.max(0, T.training - training) };
+}
+async function remindSchool(db, school, now, out) {
+  const st = await getSettings(db, school);
+  if (!st.features.reminders) return;
+  const said_ = [];
+  const send = (ids, msg) => { if (!ids.length) return null; said_.push({ to: ids.length, title: msg.title, body: msg.body }); return notify(db, ids, Object.assign({ icon: st.icon || "", url: goUrl(school, "go=schedule") }, msg)); };
+  const note = (kind, id, ids) => { out.push({ school: school.id, kind, id, to: ids, msgs: said_.splice(0) }); };
+  // Events: starting soon, and the evening-before nudge.
+  if (st.features.schedule) {
+    await fillSeries(db, school, st);
+    const { results } = await db.prepare("SELECT * FROM events WHERE school_id = ? AND starts_at > ? AND starts_at < ? ORDER BY starts_at").bind(school.id, now, now + 30 * 3600e3).all();
+    for (const e of results) {
+      const teams = parse(e.teams, []), aud = await eventAudience(db, school, st, teams);
+      if (!aud.length) continue;
+      const rs = (await db.prepare("SELECT user_id, status FROM rsvps WHERE event_id = ?").bind(e.id).all()).results;
+      const said = new Map(rs.map(r => [r.user_id, r.status]));
+      const title = eventTitle(e), when = dayWord(e.starts_at, now, st.tz) + " at " + clockIn(e.starts_at, st.tz);
+      if (e.starts_at - now <= SOON_MS) {
+        // Made less than 2 hours ahead: its "New" notification already said when.
+        if (e.created_at > e.starts_at - SOON_MS || !(await claim(db, "soon:" + e.id + ":" + e.starts_at, now))) continue;
+        const going = aud.filter(id => said.get(id) === "in" || said.get(id) === "maybe"), open = aud.filter(id => !said.has(id));
+        const lead = "Starts " + untilText(e.starts_at - now) + ", at " + clockIn(e.starts_at, st.tz) + ".";
+        await send(going, { title: title, body: lead + (e.link ? " Link in Backpost." : ""), tag: "soon-" + e.id });
+        await send(open, { title: title, body: lead + " You haven't answered yet: are you in?", tag: "soon-" + e.id });
+        note("soon", e.id, going.concat(open));
+        continue;
+      }
+      const askAt = zonedMs(addDaysYmd(ymdIn(e.starts_at, st.tz), -1), ASK_AT, st.tz);
+      if (now < askAt || e.created_at >= askAt) continue;
+      const open = aud.filter(id => !said.has(id));
+      if (!open.length || !(await claim(db, "ask:" + e.id + ":" + e.starts_at, now))) continue;
+      await send(open, { title: "Are you in? " + title, body: when + ". Answer In, Maybe or Out in Backpost.", tag: "ask-" + e.id });
+      note("ask", e.id, open);
+    }
+  }
+  // Thursday evening: players (and coaches who play) still short on this week's sessions.
+  const today = ymdIn(now, st.tz);
+  if (dow(today) === WEEK_NUDGE.day && now >= zonedMs(today, WEEK_NUDGE.at, st.tz)) {
+    const wk = addDaysYmd(today, -((dow(today) + 6) % 7));
+    const free = st.rosters.filter(r => r.casual).map(r => r.id);
+    const { results } = await db.prepare("SELECT u.id, u.team, u.targets, w.data FROM users u LEFT JOIN weeks w ON w.user_id = u.id AND w.week = ? WHERE u.school_id = ? AND u.team IS NOT NULL").bind(wk, school.id).all();
+    for (const u of results) {
+      if (free.includes(u.team)) continue;
+      const left = weekLeft(st, u, wk, parse(u.data, {})), n = left.ranked + left.training;
+      if (!n || !(await claim(db, "week:" + u.id + ":" + wk, now))) continue;
+      const parts = [left.ranked ? left.ranked + " Ranked" : "", left.training ? left.training + " Training" : ""].filter(Boolean).join(" and ");
+      await send([u.id], { title: n + (n === 1 ? " session" : " sessions") + " to go this week", body: parts + " left. You have through Sunday.", url: goUrl(school, "go=week"), tag: "week-" + wk });
+      note("week", u.id, [u.id]);
+    }
+  }
+}
+// One reminder run across every active school. Returns what was sent (and to whom, for tests).
+async function runReminders(db, now) {
+  const out = [];
+  const { results } = await db.prepare("SELECT * FROM schools WHERE status = 'active'").all();
+  for (const row of results) {
+    const school = Object.assign({}, row, { base: "/" + row.id });
+    try { await remindSchool(db, school, now, out); }
+    catch (e) { console.error("reminders " + row.id + ": " + (e && e.stack ? e.stack : e)); }
+  }
+  await db.prepare("DELETE FROM sent WHERE at < ?").bind(now - 40 * 864e5).run();
+  return out;
+}
+// At most one run a minute, across every server: whoever moves the clock in kv gets to run.
+async function tick(db, now) {
+  await db.prepare("INSERT OR IGNORE INTO kv (k, v) VALUES ('tick', '0')").run();
+  const r = await db.prepare("UPDATE kv SET v = ? WHERE k = 'tick' AND CAST(v AS INTEGER) < ?").bind(String(now), now - 60000).run();
+  if (!r.meta || !r.meta.changes) return null;
+  return await runReminders(db, now);
+}
+let lastTickTry = 0;
+
+/* ---------- Calendar link: a private .ics feed per person ----------
+   The link is the person's id, a version and a signature, so it can be shown again any time without
+   being stored; "Make a new link" bumps the version and the old link stops working. */
+let calKeyCache = null;
+async function calKey(db) {
+  if (calKeyCache) return calKeyCache;
+  const fresh = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("");
+  await db.prepare("INSERT OR IGNORE INTO kv (k, v) VALUES ('calkey', ?)").bind(fresh).run();
+  const row = await db.prepare("SELECT v FROM kv WHERE k = 'calkey'").first();
+  calKeyCache = await crypto.subtle.importKey("raw", new TextEncoder().encode(row.v), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return calKeyCache;
+}
+async function calSig(db, id, ver) {
+  const mac = await crypto.subtle.sign("HMAC", await calKey(db), new TextEncoder().encode("cal:" + id + ":" + ver));
+  return Array.from(new Uint8Array(mac).slice(0, 16), b => b.toString(16).padStart(2, "0")).join("");
+}
+async function calUrl(db, origin, u) { return origin + "/api/cal/" + u.id + "-" + (u.cal_ver || 0) + "-" + (await calSig(db, u.id, u.cal_ver || 0)) + ".ics"; }
+const icsText = t => String(t || "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+// Lines over 75 bytes continue on the next line after a space (RFC 5545).
+function icsFold(line) {
+  const enc = new TextEncoder(), out = [];
+  let cur = "", n = 0;
+  for (const ch of line) {
+    const b = enc.encode(ch).length;
+    if (n + b > (out.length ? 74 : 75)) { out.push(cur); cur = ""; n = 0; }
+    cur += ch; n += b;
+  }
+  out.push(cur);
+  return out.join("\r\n ");
+}
+const icsTime = ms => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+async function calFeed(ctx, token) {
+  const { db } = ctx;
+  const m = /^([a-f0-9]{24})-(\d{1,6})-([a-f0-9]{32})\.ics$/.exec(token || "");
+  if (!m) fail(404, "Not found.");
+  const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(m[1]).first();
+  if (!u || String(u.cal_ver || 0) !== m[2] || !(await sameSecret(m[3], await calSig(db, u.id, u.cal_ver || 0)))) fail(404, "This calendar link was replaced. Get the new one from Account in Backpost.");
+  const row = await db.prepare("SELECT * FROM schools WHERE id = ?").bind(u.school_id).first();
+  if (!row) fail(404, "Not found.");
+  const school = Object.assign({}, row, { base: "/" + row.id });
+  const st = await getSettings(db, school);
+  let rows = [];
+  if (row.status === "active" && st.features.schedule) {
+    await fillSeries(db, school, st);
+    const { results } = await db.prepare("SELECT * FROM events WHERE school_id = ? AND starts_at >= ? ORDER BY starts_at LIMIT 300").bind(school.id, Date.now() - SCHED_PAST_MS).all();
+    // A coach's calendar has every event; anyone else's has their rosters' events.
+    rows = u.role === "coach" ? results : results.filter(r => onEvent(u, st, parse(r.teams, [])));
+  }
+  const mine = rows.length ? new Map((await db.prepare("SELECT event_id, status FROM rsvps WHERE user_id = ? AND event_id IN (" + rows.map(() => "?").join(", ") + ")").bind(u.id, ...rows.map(r => r.id)).all()).results.map(r => [r.event_id, r.status])) : new Map();
+  const many = u.role === "coach" || rostersOf(u).length > 1, link = "https://getbackpost.com" + school.base + "?go=schedule", stamp = icsTime(Date.now());
+  const L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Backpost//Schedule//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+    "X-WR-CALNAME:" + icsText(st.title + " schedule"), "X-WR-TIMEZONE:" + st.tz, "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H"];
+  for (const r of rows) {
+    const e = pubEvent(r, [], null), start = r.starts_at, end = start + (r.kind === "film" ? 3600e3 : 2 * 3600e3);
+    const names = e.teams.map(t => (st.rosters.find(x => x.id === t) || {}).name).filter(Boolean).join(", ");
+    const said = { in: "In", maybe: "Maybe", out: "Out" }[mine.get(r.id)];
+    const desc = [e.format, e.details, e.link, u.role === "coach" ? "" : said ? "You said " + said + "." : "You haven't answered yet.", "Answer in Backpost: " + link].filter(Boolean).join("\n");
+    L.push("BEGIN:VEVENT", "UID:" + r.id + "@getbackpost.com", "DTSTAMP:" + stamp, "DTSTART:" + icsTime(start), "DTEND:" + icsTime(end),
+      "LAST-MODIFIED:" + icsTime(r.updated_at || r.created_at), "SUMMARY:" + icsText(eventTitle(r) + (many && names ? " (" + names + ")" : "")),
+      "DESCRIPTION:" + icsText(desc), "URL:" + link, "STATUS:CONFIRMED", "END:VEVENT");
+  }
+  L.push("END:VCALENDAR");
+  return new Response(L.map(icsFold).join("\r\n") + "\r\n", { headers: { "Content-Type": "text/calendar; charset=utf-8", "Cache-Control": "no-cache", "Content-Disposition": 'inline; filename="backpost.ics"', "X-Content-Type-Options": "nosniff" } });
+}
+
 /* ---------- One school's routes ---------- */
 async function route(ctx, segs) {
   const { db, req, method, body, user, school, jar, later } = ctx;
@@ -1034,6 +1223,13 @@ async function route(ctx, segs) {
     if (status) await db.prepare("INSERT INTO rsvps (event_id, user_id, status, at) VALUES (?, ?, ?, ?) ON CONFLICT(event_id, user_id) DO UPDATE SET status = excluded.status, at = excluded.at").bind(b, user.id, status, Date.now()).run();
     else await db.prepare("DELETE FROM rsvps WHERE event_id = ? AND user_id = ?").bind(b, user.id).run();
     return json({ ok: true, status });
+  }
+  /* Calendar link (Google, Apple, Outlook): the same private link every time, until a new one is made. */
+  if (key === "GET calendar") return json({ url: await calUrl(db, ctx.origin, user) });
+  if (key === "POST calendar/reset") {
+    await db.prepare("UPDATE users SET cal_ver = cal_ver + 1 WHERE id = ?").bind(user.id).run();
+    const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(user.id).first();
+    return json({ url: await calUrl(db, ctx.origin, u) });
   }
   /* Push notifications for this device */
   if (key === "GET push/key") return json({ key: (await vapidKeys(db)).publicKey });

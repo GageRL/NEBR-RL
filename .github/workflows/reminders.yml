@@ -1,0 +1,16 @@
+# Sends Backpost's reminders (events starting soon, "are you in?", weekly sessions).
+# The site does the work at /api/tick; this just knocks on the door every 10 minutes.
+# Each reminder is sent once, so an extra or late run never doubles anything up.
+name: Reminders
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run reminders
+        run: curl -fsS --retry 2 --max-time 60 -X POST -H "Content-Type: application/json" -d '{}' https://getbackpost.com/api/tick
