@@ -45,6 +45,13 @@
   const rosterList = () => S.settings.rosters;
   const teamName = t => { const x = rosterList().find(r => r.id === t); return x ? x.name : ""; };
   const freeTeam = t => { const x = rosterList().find(r => r.id === t); return !!(x && x.casual); };
+  // Everyone on a roster plays: every player, and coaches who also play.
+  const plays = u => !!(u && u.team);
+  // Their main roster first (it sets the weekly requirement), then any they sub for.
+  const rostersOf = u => plays(u) ? [u.team].concat((u.subs || []).filter(t => t !== u.team && teamName(t))) : [];
+  const subsText = u => rostersOf(u).slice(1).map(teamName).join(", ");
+  // When someone's weeks start counting: when they joined, or when a coach started playing.
+  const playsFrom = u => Math.max(u.createdAt || 0, u.playsSince || 0);
   const feat = f => S.settings.features[f] !== false;
 
   /* ---------- Helpers ---------- */
@@ -155,7 +162,7 @@
     return out;
   }
   function normUser(u) {
-    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: typeof u.team === "string" && u.team ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0, admin: u.admin === true };
+    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: typeof u.team === "string" && u.team ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0, playsSince: Number(u.playsSince) || 0, subs: Array.isArray(u.subs) ? u.subs.filter(t => typeof t === "string") : [], admin: u.admin === true };
   }
   function normPrefs(p) {
     const out = { layout: {} }, lay = isPlain(p) && isPlain(p.layout) ? p.layout : {};
@@ -193,7 +200,7 @@
     view: "player", page: "home", wk: mondayOf(todayStr()), coachWk: mondayOf(todayStr()),
     roster: {}, rosterWeeks: {}, rosterLoaded: false, sel: null, pdFor: null,
     removals: {}, myHist: [], hist: {}, pweeks: {}, myReviews: [], reviews: [], noteOpen: null, noteDraft: {}, editOpen: null, editEl: null,
-    events: [], schedAccess: false, cEvents: [], evEdit: null, school: null, paused: false, missing: false, adminSkip: false,
+    events: [], schedAccess: false, cEvents: [], series: [], evEdit: null, school: null, paused: false, missing: false, adminSkip: false,
     undo: [], saveErr: null, settingsDirty: false, lookPreview: false, board: null
   };
 
@@ -529,18 +536,56 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.events = []; S.cEvents = []; S.evEdit = null; S.needsSetup = false;
+    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.events = []; S.cEvents = []; S.series = []; S.evEdit = null; S.needsSetup = false;
     setStatus($("#authStatus"), "Signed out. Sign in again.", "err");
     renderAll();
   }
   function renderAccount() {
     if (!S.me || S.me.admin) return;
-    $("#accName").textContent = S.me.name + (S.me.role === "coach" ? ", coach" : S.me.team ? ", " + teamName(S.me.team) : "");
+    const coach = S.me.role === "coach";
+    const also = subsText(S.me) ? " (also " + subsText(S.me) + ")" : "";
+    $("#accName").textContent = S.me.name + (coach ? (S.me.team ? ", coach and " + teamName(S.me.team) + " player" + also : ", coach") : S.me.team ? ", " + teamName(S.me.team) + also : "");
     // A coach switches between the coach view and their own training here (phones) or in the sidebar.
-    $("#accSwitch").hidden = S.me.role !== "coach";
+    $("#accSwitch").hidden = !coach;
     $("#accView").textContent = S.view === "coach" ? "Switch to my training" : "Back to the coach view";
+    // A coach can put themselves on a roster to play.
+    $("#accPlay").hidden = !coach;
+    if (coach && document.activeElement !== $("#accTeam")) teamSelect($("#accTeam"), true, S.me.team);
   }
   $("#accView").addEventListener("click", () => setView(S.view === "coach" ? "player" : "coach"));
+  // "Also plays on": every roster but their main one, checked where they sub. Hidden for someone not playing.
+  function fillSubs(box, p) {
+    if (!box || box.contains(document.activeElement)) return;
+    const others = rosterList().filter(r => r.id !== p.team);
+    box.hidden = !plays(p) || !others.length;
+    const k = JSON.stringify([others, p.subs]);
+    if (box.dataset.k === k) return;
+    box.dataset.k = k;
+    box.textContent = "";
+    box.append(mk("span", "lbl", "Also plays on"));
+    for (const r of others) {
+      const l = mk("label", "chk"), c = mk("input"); c.type = "checkbox"; c.value = r.id; c.checked = p.subs.includes(r.id);
+      l.append(c, document.createTextNode(" " + r.name)); box.append(l);
+    }
+  }
+  // Roster picker. For a coach the first choice is not playing.
+  function teamSelect(sel, coach, value) {
+    const opts = (coach ? [["", "Doesn't play"]] : []).concat(rosterList().map(r => [r.id, r.name]));
+    const k = JSON.stringify(opts);
+    if (sel.dataset.k !== k) { sel.dataset.k = k; sel.textContent = ""; opts.forEach(([v, t]) => sel.append(new Option(t, v))); }
+    sel.value = value || "";
+  }
+  $("#accTeam").addEventListener("change", async () => {
+    const sel = $("#accTeam"), st = $("#accTeamStatus"), team = sel.value || null;
+    sel.disabled = true;
+    try {
+      const r = await api("PATCH", "coach/players/" + S.me.id, { team });
+      S.me.team = normUser(r.player).team;
+      setStatus(st, team ? "You play on " + teamName(team) + " now. Its schedule is under My training." : "You're off the roster. You're still a coach.", "ok");
+      await refresh();
+    } catch (err) { setStatus(st, err.message, "err"); sel.value = S.me.team || ""; }
+    finally { sel.disabled = false; }
+  });
   $("#pwForm").addEventListener("submit", async e => {
     e.preventDefault();
     const st = $("#pwStatus");
@@ -986,7 +1031,9 @@
     for (const wk of list) {
       const st = weekStats(weekOf(wk), user), T = targetsFor(user, wk), rows = reqRows(st, user, wk);
       const games = PL.reduce((a, q) => a + st.games[q.key].w + st.games[q.key].l, 0);
-      const status = rows.length ? (remaining(rows) ? "Missed" : "Done") : "";
+      // Only weeks they were playing get a verdict (a coach who doesn't play, or before they started, gets none).
+      const counted = plays(user) && (!playsFrom(user) || wk >= mondayOf(ymd(new Date(playsFrom(user)))));
+      const status = rows.length && counted ? (remaining(rows) ? "Missed" : "Done") : "";
       const b = mk("button", "past-row" + (status === "Done" ? " met" : ""));
       b.type = "button";
       if (wk === current) b.setAttribute("aria-current", "true");
@@ -1210,7 +1257,7 @@
     try {
       const [p, w, rv, ev] = await Promise.all([api("GET", "coach/players"), api("GET", "coach/weeks/" + wk), api("GET", "coach/reviews").catch(() => null), feat("schedule") ? api("GET", "coach/events").catch(() => null) : null]);
       if (rv) S.reviews = (rv.reviews || []).map(normReview);
-      if (ev) S.cEvents = (ev.events || []).map(normEvent);
+      if (ev) { S.cEvents = (ev.events || []).map(normEvent); S.series = (ev.series || []).map(normSeries); }
       S.roster = {};
       for (const u of p.players || []) { const n = normUser(u); S.roster[n.id] = n; }
       if (wk === S.coachWk) {
@@ -1240,19 +1287,20 @@
     if (S.sel === id) renderPlayerDetail();
   }
   function rosterIds() {
-    // Every player, plus the coach only in weeks the coach logged something.
-    return Object.keys(S.roster).filter(id => S.roster[id].role === "player" || (!!S.rosterWeeks[id] && S.rosterWeeks[id].sessions.length > 0));
+    // Everyone on a roster (coaches who play too), plus other coaches only in weeks they logged something.
+    return Object.keys(S.roster).filter(id => plays(S.roster[id]) || (!!S.rosterWeeks[id] && S.rosterWeeks[id].sessions.length > 0));
   }
   // Status for the viewed week. Same requirement for everyone except Casual players, who have none.
   function playerStatus(id) {
     const p = S.roster[id], w = S.rosterWeeks[id] || normWeek(null, S.coachWk), wk = S.coachWk, thisWk = mondayOf(S.today);
     const st = weekStats(w, p), rows = reqRows(st, p, wk), left = remaining(rows);
-    const isNew = p.createdAt && ymd(new Date(p.createdAt)) > addDays(wk, 6);
-    if (freeTeam(p.team)) return { g: p.active && wk === thisWk ? "live" : isNew ? "notyet" : "free", left: 0, st };
+    const isNew = playsFrom(p) && ymd(new Date(playsFrom(p))) > addDays(wk, 6);
+    // No requirement: a roster with no set sessions, or a coach who logs training but doesn't play.
+    if (freeTeam(p.team) || !plays(p)) return { g: p.active && wk === thisWk ? "live" : isNew ? "notyet" : "free", left: 0, st };
     let g = "open";
     if (p.active && wk === thisWk) g = "live";
     else if (rows.length && !left) g = "done";
-    else if (p.createdAt && ymd(new Date(p.createdAt)) > addDays(wk, 6)) g = "notyet";
+    else if (isNew) g = "notyet";
     else if (wk < thisWk) g = "missed";
     return { g, left, st };
   }
@@ -1281,7 +1329,7 @@
     const att = $("#attn");
     att.textContent = "";
     if (S.rosterLoaded && ids.length) {
-      const sts = ids.filter(id => S.roster[id].role === "player").map(playerStatus), n = g => sts.filter(x => x.g === g).length;
+      const sts = ids.filter(id => plays(S.roster[id])).map(playerStatus), n = g => sts.filter(x => x.g === g).length;
       const item = (num, label, cls) => { const p = mk("p", "attn-i" + (cls ? " " + cls : "")); p.append(mk("b", "", String(num)), document.createTextNode(" " + label)); att.append(p); };
       if (S.coachWk === thisWk) {
         if (n("live")) item(n("live"), "in session", "live");
@@ -1310,9 +1358,11 @@
       if (S.sel === x.id) b.setAttribute("aria-current", "true");
       const nm = mk("span", "rname", p.name);
       if (p.team) nm.append(mk("span", "bteam", teamName(p.team)));
+      if (subsText(p)) nm.append(mk("span", "bteam", "Also " + subsText(p)));
+      if (p.role === "coach") nm.append(mk("span", "bteam brole", "Coach"));
       const pill = mk("span", "pill " + x.g, statusLabel(x));
       if (x.g === "live") pill.title = TYPES[p.active.type].label + " \u00b7 " + fmtDur(elapsedMin(p.active.startedAt));
-      const PT = targetsFor(p, S.coachWk);
+      const PT = plays(p) ? targetsFor(p, S.coachWk) : { ranked: 0, training: 0 };
       b.append(nm, cell(x.st.ranked, PT.ranked), cell(x.st.training, PT.training), pill);
       b.addEventListener("click", () => pickPlayer(x.id));
       box.append(b);
@@ -1329,6 +1379,7 @@
       if (S.sel === id) b.setAttribute("aria-current", "true");
       const nm = mk("span", "rname", S.roster[id].name);
       if (id === S.me.id) nm.append(mk("span", "bteam", "You"));
+      if (S.roster[id].team) nm.append(mk("span", "bteam", "Plays on " + teamName(S.roster[id].team)));
       b.append(nm);
       b.addEventListener("click", () => pickPlayer(id));
       cl.append(b);
@@ -1398,10 +1449,8 @@
     $("#tPlayer").textContent = p.name;
     $("#pdName").textContent = p.name;
     const ts = $("#pdTeam");
-    if (ts && document.activeElement !== ts) {
-      if (ts.options.length !== rosterList().length || rosterList().some((r, i) => ts.options[i].value !== r.id || ts.options[i].text !== r.name)) { ts.textContent = ""; rosterList().forEach(r => ts.append(new Option(r.name, r.id))); }
-      ts.value = p.team || "";
-    }
+    if (ts && document.activeElement !== ts) teamSelect(ts, p.role === "coach", p.team);
+    fillSubs($("#pdSubs"), p);
     const link = $("#pdTracker");
     link.hidden = !p.trackerUrl;
     if (p.trackerUrl) link.href = p.trackerUrl;
@@ -1655,7 +1704,7 @@
       f.elements.pw.value = genPassword();
       f.querySelector("[data-gen]").addEventListener("click", () => { f.elements.pw.value = genPassword(); });
     });
-    if (p.role === "player") btn("Requirement", "", () => {
+    if (plays(p)) btn("Requirement", "", () => {
       const cur = S.roster[id], T = targetsFor(cur, mondayOf(S.today));
       const inner = freeTeam(cur.team)
         ? '<p class="fine">' + teamName(cur.team) + ' has no set sessions. Move this player to another roster to give them a requirement.</p>'
@@ -1681,13 +1730,13 @@
     if (admin) btn(p.role === "coach" ? "Make player" : "Make coach", "", () => {
       const toCoach = S.roster[id].role !== "coach";
       const f = form(toCoach ? "Make coach" : "Make player",
-        '<p class="fine">' + (toCoach ? S.roster[id].name + " gets the coach view: roster, schedule, reviews and settings." : S.roster[id].name + " loses the coach view and joins a roster.") + "</p>" +
+        '<p class="fine">' + (toCoach ? S.roster[id].name + " gets the coach view: roster, schedule, reviews and settings. They keep playing on " + teamName(S.roster[id].team) + " until you change Plays on." : S.roster[id].name + " loses the coach view and plays on a roster.") + "</p>" +
         (toCoach ? "" : '<label class="fld"><span class="lbl">Roster</span><select name="prole-team"></select></label>'),
         toCoach ? "Make coach" : "Make player", async f2 => {
           const ok = await patch(toCoach ? { role: "coach" } : { role: "player", team: f2.elements.namedItem("prole-team").value }, toCoach ? "Now a coach." : "Now a player.");
           if (ok) { S.pdFor = null; renderCoach(); setStatus($("#pdStatus"), toCoach ? "Now a coach." : "Now a player.", "ok"); }
         });
-      if (!toCoach) { const sel = f.elements.namedItem("prole-team"); rosterList().forEach(r => sel.append(new Option(r.name, r.id))); sel.value = (rosterList().find(r => !r.casual) || rosterList()[0]).id; }
+      if (!toCoach) { const sel = f.elements.namedItem("prole-team"); rosterList().forEach(r => sel.append(new Option(r.name, r.id))); sel.value = S.roster[id].team || (rosterList().find(r => !r.casual) || rosterList()[0]).id; }
     });
     if (p.role === "player" || admin) {
       const rm = btn("Remove", "danger push", () => {
@@ -1708,16 +1757,37 @@
       });
       rm.setAttribute("aria-label", p.role === "coach" ? "Remove coach" : "Remove player");
     }
-    if (p.role === "player") {
+    {
+      // Players are always on a roster. A coach can play on one too, or not play.
+      const coach = p.role === "coach";
       const tr = mk("label", "pd-team");
-      tr.append(mk("span", "lbl", "Roster"));
+      tr.append(mk("span", "lbl", coach ? "Plays on" : "Roster"));
       const sel = mk("select");
       sel.id = "pdTeam";
-      rosterList().forEach(r => sel.append(new Option(r.name, r.id)));
-      sel.value = p.team || "";
-      sel.addEventListener("change", () => patch({ team: sel.value }, "Moved to " + teamName(sel.value) + "."));
+      teamSelect(sel, coach, p.team);
+      sel.addEventListener("change", async () => {
+        const was = plays(S.roster[id]), msg = sel.value ? (coach ? "Plays on " + teamName(sel.value) + " now." : "Moved to " + teamName(sel.value) + ".") : "Off the roster. Still a coach.";
+        if (!(await patch({ team: sel.value || null }, msg))) { sel.value = S.roster[id].team || ""; return; }
+        if (id === S.me.id) { S.me.team = S.roster[id].team; refresh(); }
+        // Starting or stopping play changes what's in this panel (the requirement).
+        if (was !== plays(S.roster[id])) { S.pdFor = null; renderCoach(); setStatus($("#pdStatus"), msg, "ok"); }
+      });
       tr.append(sel);
       body.append(tr);
+      // Rosters they sub for: that roster's schedule and notifications too.
+      const sb = mk("div", "pd-subs");
+      sb.id = "pdSubs"; sb.setAttribute("role", "group"); sb.setAttribute("aria-label", "Also plays on");
+      sb.addEventListener("change", async ev => {
+        const c = ev.target.closest("input"); if (!c) return;
+        const subs = Array.from(sb.querySelectorAll("input:checked")).map(x => x.value);
+        sb.querySelectorAll("input").forEach(x => { x.disabled = true; });
+        const nm = teamName(c.value);
+        const ok = await patch({ subs }, c.checked ? "Also on " + nm + " now: its schedule and notifications." : "Off " + nm + ".");
+        sb.querySelectorAll("input").forEach(x => { x.disabled = false; });
+        if (!ok) { c.blur(); sb.dataset.k = ""; fillSubs(sb, S.roster[id]); }
+        if (id === S.me.id) { S.me.subs = S.roster[id].subs; refresh(); }
+      });
+      body.append(sb);
     }
     body.append(acts, status, forms);
     const stats = mk("div", "stack");
@@ -1745,17 +1815,20 @@
     const f = $("#addForm");
     f.hidden = !f.hidden;
     if (!f.hidden) {
-      const sel = $("#addTeam");
-      sel.textContent = "";
-      rosterList().forEach(r => sel.append(new Option(r.name, r.id)));
-      sel.value = (rosterList().find(r => !r.casual) || rosterList()[0]).id;
       // Only the Backpost admin can add a coach account here.
-      $("#addRoleRow").hidden = !S.me.admin; $("#addRole").value = "player"; $("#addTeamRow").hidden = false;
+      $("#addRoleRow").hidden = !S.me.admin; $("#addRole").value = "player";
+      addTeamFor();
       $("#addPw").value = genPassword(); setStatus($("#addStatus"), ""); $("#addName").focus();
     }
   });
+  // A new player goes on the first roster with set sessions; a new coach doesn't play unless picked.
+  function addTeamFor() {
+    const coach = $("#addRole").value === "coach";
+    $("#addTeamLbl").textContent = coach ? "Plays on" : "Roster";
+    teamSelect($("#addTeam"), coach, coach ? "" : (rosterList().find(r => !r.casual) || rosterList()[0]).id);
+  }
   const addPwFor = () => genPassword() + ($("#addRole").value === "coach" ? genPassword().slice(0, 4) : "");
-  $("#addRole").addEventListener("change", () => { $("#addTeamRow").hidden = $("#addRole").value === "coach"; $("#addPw").value = addPwFor(); });
+  $("#addRole").addEventListener("change", () => { addTeamFor(); $("#addPw").value = addPwFor(); });
   $("#addGen").addEventListener("click", () => { $("#addPw").value = addPwFor(); });
   $("#addCancel").addEventListener("click", () => { $("#addForm").hidden = true; });
   $("#addForm").addEventListener("submit", async e => {
@@ -1765,7 +1838,7 @@
     const role = S.me.admin && $("#addRole").value === "coach" ? "coach" : "player";
     if (!name) { setStatus(st, "Enter a name.", "err"); return; }
     try {
-      const r = await api("POST", "coach/players", Object.assign({ name, password: pw, trackerUrl: tracker }, role === "coach" ? { role } : { team }));
+      const r = await api("POST", "coach/players", Object.assign({ name, password: pw, trackerUrl: tracker, team: team || null }, role === "coach" ? { role } : {}));
       const u = normUser(r.player);
       S.roster[u.id] = u;
       showCopy(st, u.name, pw);
@@ -1853,7 +1926,7 @@
     const fe = document.activeElement, keep = fe && fe.dataset && fe.dataset.rk ? { k: fe.dataset.rk, a: fe.selectionStart } : null;
     box.textContent = "";
     const counts = {};
-    for (const id of Object.keys(S.roster)) { const t = S.roster[id].role === "player" ? S.roster[id].team : null; if (t) counts[t] = (counts[t] || 0) + 1; }
+    for (const id of Object.keys(S.roster)) { const t = S.roster[id].team; if (t) counts[t] = (counts[t] || 0) + 1; }
     for (const r of draft.rosters) {
       const row = mk("div", "rost-row");
       const name = mk("input"); name.type = "text"; name.maxLength = 20; name.value = r.name; name.dataset.rk = r.key;
@@ -1997,9 +2070,22 @@
       details: str(e.details, 1000), link: /^https?:\/\//i.test(e.link || "") ? str(e.link, 300) : "", teams: Array.isArray(e.teams) ? e.teams.filter(x => typeof x === "string") : [],
       result: str(e.result, 40), reviews: Array.isArray(e.reviews) ? e.reviews.filter(x => typeof x === "string") : [],
       rsvps: Array.isArray(e.rsvps) ? e.rsvps.filter(isPlain).map(r => ({ userId: String(r.userId), name: str(r.name, 32), status: RSVP_L[r.status] ? r.status : "" })) : [],
-      mine: RSVP_L[e.mine] ? e.mine : ""
+      mine: RSVP_L[e.mine] ? e.mine : "", series: typeof e.series === "string" ? e.series : null, own: e.own === true
     };
   }
+  // A weekly event: the same event on the picked days every week.
+  const DAY_L = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], WEEK_DAYS = [1, 2, 3, 4, 5, 6, 0];
+  function normSeries(s) {
+    return {
+      id: String(s.id), kind: EV_KIND[s.kind] ? s.kind : "scrim", opponent: str(s.opponent, 60),
+      days: Array.isArray(s.days) ? WEEK_DAYS.filter(d => s.days.includes(d)) : [], time: /^\d{2}:\d{2}$/.test(s.time) ? s.time : "19:00",
+      startsOn: /^\d{4}-\d{2}-\d{2}$/.test(s.startsOn) ? s.startsOn : S.today, until: /^\d{4}-\d{2}-\d{2}$/.test(s.until || "") ? s.until : null,
+      format: str(s.format, 40), details: str(s.details, 1000), link: /^https?:\/\//i.test(s.link || "") ? str(s.link, 300) : "",
+      teams: Array.isArray(s.teams) ? s.teams.filter(x => typeof x === "string") : []
+    };
+  }
+  function daysText(days) { const n = WEEK_DAYS.filter(d => days.includes(d)).map(d => DAY_L[d]); return n.length < 2 ? n.join("") : n.slice(0, -1).join(", ") + " and " + n[n.length - 1]; }
+  function hmText(hm) { const [h, m] = hm.split(":").map(Number); const d = new Date(2000, 0, 1, h, m); return fmtClock(d.toISOString()); }
   const evTitle = e => e.kind === "film" ? e.opponent : "vs " + e.opponent;
   const evMs = e => new Date(e.startsAt).getTime();
   function dayTag(d) {
@@ -2015,8 +2101,10 @@
     top.append(mk("span", "ev-kind", EV_KIND[e.kind]), mk("span", "ev-title", evTitle(e)));
     main.append(top);
     const meta = [];
+    if (e.series) meta.push("Weekly");
     if (e.format) meta.push(e.format);
-    if (coach || e.teams.length > 1) meta.push(e.teams.map(teamName).filter(Boolean).join(", "));
+    // Which roster it's for, when that isn't obvious (several rosters, or a player who subs for another).
+    if (coach || e.teams.length > 1 || (S.me && rostersOf(S.me).length > 1)) meta.push(e.teams.map(teamName).filter(Boolean).join(", "));
     if (e.result) meta.push("Result: " + e.result);
     if (meta.length) main.append(mk("p", "ev-meta", meta.join(" — ")));
     if (e.details) main.append(mk("p", "ev-details", e.details));
@@ -2044,7 +2132,7 @@
     const lines = ["in", "maybe", "out"].filter(k => tally[k].length).map(k => RSVP_L[k] + ": " + tally[k].join(", "));
     if (coach && future) {
       const answered = new Set(e.rsvps.map(r => r.userId));
-      const waiting = Object.values(S.roster).filter(p => p.role === "player" && e.teams.includes(p.team) && S.settings.schedRosters.includes(p.team) && !answered.has(p.id)).map(p => p.name).sort();
+      const waiting = Object.values(S.roster).filter(p => rostersOf(p).some(t => e.teams.includes(t) && S.settings.schedRosters.includes(t)) && !answered.has(p.id)).map(p => p.name).sort();
       if (waiting.length) lines.push("No answer: " + waiting.join(", "));
     }
     if (lines.length) main.append(mk("p", "ev-who", lines.join("  |  ")));
@@ -2052,7 +2140,8 @@
       const row = mk("div", "row");
       const ed = mk("button", "linkbtn", "Edit"); ed.type = "button";
       ed.addEventListener("click", () => { S.evEdit = e.id; renderEvForm(); });
-      const rm = mk("button", "linkbtn rm", "Delete"); rm.type = "button";
+      // One week of a weekly event can be skipped; the rest of the weeks stay.
+      const rm = mk("button", "linkbtn rm", e.series ? "Skip this week" : "Delete"); rm.type = "button";
       rm.addEventListener("click", () => armOrRun(rm, async () => {
         rm.disabled = true;
         try { await api("DELETE", "coach/events/" + e.id); S.cEvents = S.cEvents.filter(x => x.id !== e.id); renderSchedC(); }
@@ -2095,6 +2184,36 @@
     if (!S.me || S.me.role !== "coach" || !feat("schedule")) return;
     // A form that's open keeps its place through the 30-second refresh.
     schedInto($("#schedListC"), S.cEvents, true);
+    renderSeries();
+  }
+  // Weekly events, each with what it is, when, and who it's for.
+  function renderSeries() {
+    const box = $("#seriesList");
+    $("#seriesBox").hidden = !S.series.length;
+    box.textContent = "";
+    for (const s of S.series) {
+      const li = mk("li", "wk-ev ev-" + s.kind);
+      li.dataset.id = s.id;
+      const top = mk("p", "ev-top");
+      top.append(mk("span", "ev-kind", EV_KIND[s.kind]), mk("span", "ev-title", evTitle(s)));
+      const when = "Every " + daysText(s.days) + " at " + hmText(s.time);
+      const meta = [s.teams.map(teamName).filter(Boolean).join(", ")];
+      if (s.startsOn > S.today) meta.push("Starts " + fmtDate(s.startsOn, { month: "short", day: "numeric" }));
+      if (s.until) meta.push("Until " + fmtDate(s.until, { month: "short", day: "numeric" }));
+      if (s.format) meta.push(s.format);
+      const row = mk("div", "row");
+      const ed = mk("button", "linkbtn", "Edit"); ed.type = "button";
+      ed.addEventListener("click", () => { S.evEdit = "s:" + s.id; renderEvForm(); });
+      const stop = mk("button", "linkbtn rm", "Stop repeating"); stop.type = "button";
+      stop.addEventListener("click", () => armOrRun(stop, async () => {
+        stop.disabled = true;
+        try { await api("DELETE", "coach/series/" + s.id); S.series = S.series.filter(x => x.id !== s.id); await loadCoach(); }
+        catch (err) { stop.disabled = false; }
+      }, "Remove the upcoming ones?"));
+      row.append(ed, stop);
+      li.append(top, mk("p", "wk-when", when), mk("p", "ev-meta", meta.join(" — ")), row);
+      box.append(li);
+    }
   }
   async function rsvp(e, status, btn) {
     btn.disabled = true;
@@ -2111,30 +2230,46 @@
     const box = $("#evFormBox");
     box.textContent = "";
     if (!S.evEdit) return;
-    const e = S.evEdit === "new" ? null : S.cEvents.find(x => x.id === S.evEdit);
-    if (S.evEdit !== "new" && !e) { S.evEdit = null; return; }
+    // What's open: a new event ("new"), one event (its id), or a weekly event ("s:" + its id).
+    const sid = S.evEdit.startsWith("s:") ? S.evEdit.slice(2) : null;
+    const sr = sid ? S.series.find(x => x.id === sid) : null;
+    const e = S.evEdit === "new" || sid ? null : S.cEvents.find(x => x.id === S.evEdit);
+    if ((sid && !sr) || (S.evEdit !== "new" && !sid && !e)) { S.evEdit = null; return; }
+    const isNew = S.evEdit === "new", base = sr || e;
     const f = mk("form", "sub ev-form");
     f.noValidate = true;
     const rosters = rosterList();
-    f.innerHTML = "<h3>" + (e ? "Edit event" : "New event") + "</h3>" +
+    f.innerHTML = "<h3>" + (sr ? "Edit weekly event" : e ? "Edit event" : "New event") + "</h3>" +
+      (e && e.series ? '<p class="fine ev-one">This changes ' + fmtDate(ymd(new Date(e.startsAt)), { weekday: "long", month: "short", day: "numeric" }) + ' only. To change every week, edit it under Every week.</p>' : "") +
       '<div class="add-grid">' +
       '<label class="fld"><span class="lbl">Type</span><select name="kind"><option value="match">Match</option><option value="scrim">Scrim</option><option value="film">Film session</option></select></label>' +
       '<label class="fld"><span class="lbl ev-opp-l">Opponent</span><input type="text" name="opponent" maxlength="60"></label>' +
-      '<label class="fld"><span class="lbl">Day</span><input type="date" name="day"></label>' +
+      '<label class="fld"><span class="lbl ev-day-l">Day</span><input type="date" name="day"></label>' +
       '<label class="fld"><span class="lbl">Time</span><input type="time" name="time"></label>' +
+      (isNew ? '<label class="fld ev-rep"><span class="lbl">Repeats</span><select name="repeat"><option value="">Doesn\'t repeat</option><option value="weekly">Every week</option></select></label>' : "") +
+      '<label class="fld ev-until" hidden><span class="lbl">Last day (optional)</span><input type="date" name="until"></label></div>' +
+      '<fieldset class="grp ev-days" hidden><legend>On</legend><div class="checks ev-dows"></div></fieldset>' +
+      '<div class="add-grid">' +
       '<label class="fld"><span class="lbl">Format (optional)</span><input type="text" name="format" maxlength="40" placeholder="Best of 5"></label>' +
       '<label class="fld"><span class="lbl">Link (optional)</span><input type="url" name="link" maxlength="300" placeholder="Stream, bracket or Discord link"></label></div>' +
       '<fieldset class="grp"><legend>For</legend><div class="checks ev-teams"></div></fieldset>' +
       '<label class="fld"><span class="lbl">Details (optional)</span><textarea name="details" rows="2" maxlength="1000" placeholder="Lobby name and password, where to meet, what to bring"></textarea></label>' +
       '<fieldset class="grp ev-film" hidden><legend>Replay reviews to cover</legend><div class="checks ev-rv"></div></fieldset>' +
       '<label class="fld ev-res"' + (e && evMs(e) < Date.now() ? "" : " hidden") + '><span class="lbl">Result</span><input type="text" name="result" maxlength="40" placeholder="W 3–1"></label>' +
-      '<p class="status" role="status"></p><div class="row end"><button type="button" class="btn" data-x>Cancel</button><button type="submit" class="btn primary">' + (e ? "Save event" : "Add event") + "</button></div>";
+      '<p class="status" role="status"></p><div class="row end"><button type="button" class="btn" data-x>Cancel</button><button type="submit" class="btn primary"></button></div>';
     const F = n => f.elements.namedItem(n);
     const tbox = f.querySelector(".ev-teams");
     for (const r of rosters) {
       const l = mk("label", "chk"), c = mk("input"); c.type = "checkbox"; c.value = r.id;
-      c.checked = e ? e.teams.includes(r.id) : !r.casual;
+      c.checked = base ? base.teams.includes(r.id) : !r.casual;
       l.append(c, document.createTextNode(" " + r.name)); tbox.append(l);
+    }
+    // Days of the week for a weekly event, Monday first.
+    const dbox = f.querySelector(".ev-dows");
+    for (const d of WEEK_DAYS) {
+      const l = mk("label", "chk"), c = mk("input"); c.type = "checkbox"; c.value = String(d);
+      c.checked = !!(sr && sr.days.includes(d));
+      l.append(c, document.createTextNode(" " + DAY_L[d])); dbox.append(l);
     }
     const rbox = f.querySelector(".ev-rv");
     const openRv = S.reviews.filter(r => r.status === "open" || (e && e.reviews.includes(r.id)));
@@ -2143,32 +2278,66 @@
       l.append(c, document.createTextNode(" " + (r.name || "Player") + ": " + (r.note.length > 70 ? r.note.slice(0, 69) + "…" : r.note))); rbox.append(l);
     }
     if (!openRv.length) rbox.append(mk("p", "fine", "No replay review requests waiting."));
+    const weekly = () => !!sr || (isNew && F("repeat").value === "weekly");
     const sync = () => {
-      const film = F("kind").value === "film";
+      const film = F("kind").value === "film", wkly = weekly();
       f.querySelector(".ev-opp-l").textContent = film ? "What you're reviewing" : "Opponent";
       F("opponent").placeholder = film ? "Thursday's scrim vs Kansas State" : "Team name, or TBD";
-      f.querySelector(".ev-film").hidden = !film;
+      // Replay reviews belong to one film session, so a weekly one doesn't list them.
+      f.querySelector(".ev-film").hidden = !film || wkly;
+      f.querySelector(".ev-days").hidden = !wkly;
+      f.querySelector(".ev-until").hidden = !wkly;
+      f.querySelector(".ev-day-l").textContent = wkly ? "First day" : "Day";
+      f.querySelector('button[type="submit"]').textContent = sr || e ? "Save" : wkly ? "Add weekly event" : "Add event";
+      // Starting to repeat: the first day's weekday is picked if nothing is yet.
+      if (wkly && !dbox.querySelector("input:checked") && /^\d{4}-\d{2}-\d{2}$/.test(F("day").value)) {
+        const c = dbox.querySelector('input[value="' + parseYmd(F("day").value).getDay() + '"]'); if (c) c.checked = true;
+      }
     };
     if (e) {
       F("kind").value = e.kind; F("opponent").value = e.opponent;
       const [d, t] = localParts(e.startsAt); F("day").value = d; F("time").value = t;
       F("format").value = e.format; F("link").value = e.link; F("details").value = e.details; F("result").value = e.result;
+    } else if (sr) {
+      F("kind").value = sr.kind; F("opponent").value = sr.opponent; F("day").value = sr.startsOn; F("time").value = sr.time;
+      F("until").value = sr.until || ""; F("format").value = sr.format; F("link").value = sr.link; F("details").value = sr.details;
     } else { F("kind").value = "scrim"; F("day").value = S.today; F("time").value = "19:00"; }
     F("kind").addEventListener("change", sync);
+    if (isNew) F("repeat").addEventListener("change", sync);
     sync();
     f.querySelector("[data-x]").addEventListener("click", () => { S.evEdit = null; renderEvForm(); });
     f.addEventListener("submit", async ev => {
       ev.preventDefault();
       const st = f.querySelector(".status"), day = F("day").value, time = F("time").value;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !/^\d{1,2}:\d{2}$/.test(time)) { setStatus(st, "Pick a day and time.", "err"); return; }
-      const at = parseYmd(day); const [h, m] = time.split(":").map(Number); at.setHours(h, m, 0, 0);
-      const body = {
-        kind: F("kind").value, opponent: F("opponent").value.trim(), startsAt: at.toISOString(), format: F("format").value.trim(),
-        link: F("link").value.trim(), details: F("details").value.trim(), result: F("result").value.trim(),
-        teams: Array.from(tbox.querySelectorAll("input:checked")).map(c => c.value),
-        reviews: F("kind").value === "film" ? Array.from(rbox.querySelectorAll("input:checked")).map(c => c.value) : []
+      const common = {
+        kind: F("kind").value, opponent: F("opponent").value.trim(), format: F("format").value.trim(),
+        link: F("link").value.trim(), details: F("details").value.trim(),
+        teams: Array.from(tbox.querySelectorAll("input:checked")).map(c => c.value)
       };
       const go = f.querySelector('button[type="submit"]');
+      if (weekly()) {
+        const days = Array.from(dbox.querySelectorAll("input:checked")).map(c => Number(c.value));
+        if (!days.length) { setStatus(st, "Pick at least one day of the week.", "err"); return; }
+        const until = F("until").value;
+        if (until && until < day) { setStatus(st, "The last day has to be after the first.", "err"); return; }
+        const body = Object.assign(common, { days, time: time.padStart(5, "0"), startsOn: day, until: until || null });
+        go.disabled = true;
+        try {
+          const r = sr ? await api("PUT", "coach/series/" + sr.id, body) : await api("POST", "coach/series", body);
+          S.evEdit = null;
+          renderEvForm();
+          await loadCoach();
+          const li = $("#seriesList").querySelector('[data-id="' + r.series.id + '"]');
+          if (li) li.scrollIntoView({ block: "nearest" });
+        } catch (err) { go.disabled = false; setStatus(st, err.message, "err"); }
+        return;
+      }
+      const at = parseYmd(day); const [h, m] = time.split(":").map(Number); at.setHours(h, m, 0, 0);
+      const body = Object.assign(common, {
+        startsAt: at.toISOString(), result: F("result").value.trim(),
+        reviews: F("kind").value === "film" ? Array.from(rbox.querySelectorAll("input:checked")).map(c => c.value) : []
+      });
       go.disabled = true;
       try {
         const r = e ? await api("PUT", "coach/events/" + e.id, body) : await api("POST", "coach/events", body);
@@ -2218,7 +2387,7 @@
     if (Notification.permission === "denied") return "blocked";
     return pushSub && Notification.permission === "granted" ? "on" : "off";
   }
-  const pushWhat = () => S.me && S.me.role === "coach" ? "replay review requests" : "Coach notes, replay reviews and schedule changes";
+  const pushWhat = () => S.me && S.me.role === "coach" ? (S.me.team ? "replay review requests and schedule changes" : "replay review requests") : "Coach notes, replay reviews and schedule changes";
   function renderAppBox() {
     if (!S.me) { renderAppTip(); return; }
     const inst = standalone();

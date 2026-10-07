@@ -21,7 +21,7 @@ const LOCK_AFTER = 8;
 const LOCK_MS = 10 * 60 * 1000;
 const LEGACY_SCHOOL = "nebraska";
 const LEGACY_HOSTS = ["nebr-rl.pages.dev"];
-const SCHEMA_VERSION = "2";
+const SCHEMA_VERSION = "3";
 
 const PL = ["duel", "doubles", "standard"];
 const TIER_BASES = ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Champion", "Grand Champion"];
@@ -87,7 +87,9 @@ const TABLES = [
      prefs TEXT,
      fail_count INTEGER NOT NULL DEFAULT 0,
      locked_until INTEGER NOT NULL DEFAULT 0,
-     created_at INTEGER NOT NULL
+     created_at INTEGER NOT NULL,
+     plays_since INTEGER,
+     subs TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS sessions (
      token_hash TEXT PRIMARY KEY,
@@ -143,7 +145,16 @@ const TABLES = [
      teams TEXT NOT NULL,
      result TEXT,
      created_at INTEGER NOT NULL,
-     updated_at INTEGER NOT NULL
+     updated_at INTEGER NOT NULL,
+     series_id TEXT,
+     slot TEXT
+   )`,
+  `CREATE TABLE IF NOT EXISTS series (
+     id TEXT PRIMARY KEY,
+     school_id TEXT NOT NULL,
+     data TEXT NOT NULL,
+     filled_to TEXT NOT NULL DEFAULT '',
+     created_at INTEGER NOT NULL
    )`,
   `CREATE TABLE IF NOT EXISTS rsvps (
      event_id TEXT NOT NULL,
@@ -196,6 +207,9 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS reviews_school ON reviews(school_id, status, created_at)`,
   `CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id)`,
   `CREATE INDEX IF NOT EXISTS events_school_start ON events(school_id, starts_at)`,
+  // One event per series per day, even if two visits fill the series at the same moment.
+  `CREATE UNIQUE INDEX IF NOT EXISTS events_series_slot ON events(series_id, slot) WHERE series_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS series_school ON series(school_id)`,
   `CREATE INDEX IF NOT EXISTS invites_school ON invites(school_id)`,
   `CREATE INDEX IF NOT EXISTS access_requests_time ON access_requests(created_at)`
 ];
@@ -467,14 +481,15 @@ function pubReview(r) {
 function pub(u) {
   return {
     id: u.id, name: u.username, role: u.role,
-    team: u.role === "player" ? u.team || null : null,
+    // Players are always on a roster; a coach is on one only if they also play.
+    team: u.team || null,
     trackerUrl: u.tracker_url || "",
     ranks: normRanks(parse(u.ranks, {})),
     active: parse(u.active, null),
     customFocus: parse(u.custom_focus, []),
     targetsLog: normPlayerLog(parse(u.targets, [])),
     prefs: normPrefs(parse(u.prefs, {})),
-    createdAt: u.created_at,
+    createdAt: u.created_at, playsSince: u.plays_since || null, subs: rostersOf(u).slice(1),
     ...(u.admin ? { admin: true } : {})
   };
 }
@@ -492,6 +507,18 @@ function publicSettings(s) {
 async function nameTaken(db, school, name, exceptId) {
   const row = await db.prepare("SELECT id FROM users WHERE school_id = ? AND username = ? COLLATE NOCASE").bind(school.id, name).first();
   return !!row && row.id !== exceptId;
+}
+// Every roster someone plays on: their main one first, then any they sub for. The main roster sets
+// their weekly requirement; all of them bring that roster's schedule and notifications.
+function rostersOf(u) {
+  if (!u || !u.team) return [];
+  const extra = Array.isArray(u.subs) ? u.subs : parse(u.subs, []);
+  return [u.team].concat((Array.isArray(extra) ? extra : []).filter(t => typeof t === "string" && t !== u.team).filter((t, i, a) => a.indexOf(t) === i).slice(0, 10));
+}
+// Rosters someone subs for: real rosters only, never their main one.
+function normSubs(raw, team, rosterIds) {
+  if (!team) return [];
+  return rosterIds.filter(t => t !== team && Array.isArray(raw) && raw.includes(t));
 }
 // Any member of this school by id (never another school's).
 async function member(db, school, id) {
@@ -625,13 +652,15 @@ async function columns(db, table) {
 async function ensureSchema(db) {
   await db.batch(TABLES.map(s => db.prepare(s)));
   const ver = await db.prepare("SELECT v FROM kv WHERE k = 'schema'").first();
-  if (!ver || ver.v !== SCHEMA_VERSION) await migrateV2(db);
+  if (!ver || ver.v !== SCHEMA_VERSION) await migrateV2(db, ver ? Number(ver.v) || 0 : 0);
   await db.batch(INDEXES.map(s => db.prepare(s)));
 }
-async function migrateV2(db) {
+async function migrateV2(db, prev) {
   let userCols = await columns(db, "users");
   // Columns added over the original site's life (older databases may be missing them).
-  for (const c of ["team", "targets", "prefs"]) if (!userCols.includes(c)) await db.prepare("ALTER TABLE users ADD COLUMN " + c + " TEXT").run();
+  for (const c of ["team", "targets", "prefs", "subs"]) if (!userCols.includes(c)) await db.prepare("ALTER TABLE users ADD COLUMN " + c + " TEXT").run();
+  // When a coach started playing on a roster (schema 3); earlier weeks don't count against them.
+  if (!userCols.includes("plays_since")) await db.prepare("ALTER TABLE users ADD COLUMN plays_since INTEGER").run();
   userCols = await columns(db, "users");
   if (!userCols.includes("school_id")) {
     // The original single-school database: everything in it belongs to Nebraska.
@@ -662,6 +691,11 @@ async function migrateV2(db) {
       await db.prepare("UPDATE " + t + " SET school_id = ? WHERE school_id IS NULL").bind(LEGACY_SCHOOL).run();
     }
   }
+  // Weekly events (schema 3): each event made by a weekly series knows its series and the day it's for.
+  const evCols = await columns(db, "events");
+  for (const c of ["series_id", "slot"]) if (!evCols.includes(c)) await db.prepare("ALTER TABLE events ADD COLUMN " + c + " TEXT").run();
+  // Before schema 3 coaches couldn't play, so any roster left on a coach account is stale.
+  if (prev < 3) await db.prepare("UPDATE users SET team = NULL WHERE role = 'coach'").run();
   await db.prepare("INSERT INTO kv (k, v) VALUES ('schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(SCHEMA_VERSION).run();
 }
 
@@ -808,13 +842,15 @@ function pubEvent(r, rs, me) {
     id: r.id, kind: r.kind, opponent: r.opponent, startsAt: new Date(r.starts_at).toISOString(),
     format: isPlain(extra) ? extra.format || "" : r.format || "", reviews: isPlain(extra) && Array.isArray(extra.reviews) ? extra.reviews : [],
     details: r.details || "", link: r.link || "", teams: parse(r.teams, []), result: r.result || "",
+    series: r.series_id || null, own: isPlain(extra) && extra.own === true,
     rsvps: mine.map(x => ({ userId: x.user_id, name: x.username, status: x.status }))
   };
   if (me) { const m = mine.find(x => x.user_id === me); out.mine = m ? m.status : ""; }
   return out;
 }
-// The format column holds { format, reviews } as JSON (film sessions list the review requests they cover).
-const packFormat = e => JSON.stringify({ format: e.format, reviews: e.reviews });
+// The format column holds { format, reviews } as JSON (film sessions list the review requests they cover;
+// own marks a weekly event a coach changed on its own).
+const packFormat = (e, own) => JSON.stringify(Object.assign({ format: e.format, reviews: e.reviews }, own ? { own: true } : {}));
 async function eventsWithRsvps(db, rows, me) {
   if (!rows.length) return [];
   const ids = rows.map(r => r.id);
@@ -822,15 +858,102 @@ async function eventsWithRsvps(db, rows, me) {
   return rows.map(r => pubEvent(r, results, me));
 }
 const fmtWhen = (ms, tz) => new Date(ms).toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-// Players who can see an event: on one of its rosters, and that roster can see the Schedule.
+// Who can see an event: anyone on one of its rosters, as their main roster or one they sub for
+// (players, and coaches who also play), if that roster sees the Schedule.
 async function eventAudience(db, school, st, teams) {
   const ok = teams.filter(t => st.schedRosters.includes(t));
   if (!ok.length || !st.features.schedule) return [];
-  const { results } = await db.prepare("SELECT id FROM users WHERE school_id = ? AND role = 'player' AND team IN (" + ok.map(() => "?").join(", ") + ")").bind(school.id, ...ok).all();
-  return results.map(r => r.id);
+  const { results } = await db.prepare("SELECT id, team, subs FROM users WHERE school_id = ? AND team IS NOT NULL").bind(school.id).all();
+  return results.filter(u => rostersOf(u).some(t => ok.includes(t))).map(r => r.id);
 }
-const canSeeSched = (u, st) => st.features.schedule && u.role === "player" && st.schedRosters.includes(u.team);
+const schedRostersOf = (u, st) => st.features.schedule && !u.admin ? rostersOf(u).filter(t => st.schedRosters.includes(t)) : [];
+const canSeeSched = (u, st) => schedRostersOf(u, st).length > 0;
+const onEvent = (u, st, teams) => schedRostersOf(u, st).some(t => teams.includes(t));
 const eventTitle = e => e.kind === "film" ? "Film: " + e.opponent : EVENT_KINDS[e.kind] + " vs " + e.opponent;
+
+/* ---------- Weekly events: a series puts the same event on the schedule every week, on the days picked ---------- */
+// Events are made two weeks ahead, so players can answer early without the schedule filling up with repeats. Each one is an ordinary event
+// (answers, edits, notifications) that remembers its series and the day it's for (its slot).
+const SERIES_AHEAD_DAYS = 14;
+const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const isYmd = v => /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v + "T00:00:00Z"));
+const dow = ymd => new Date(ymd + "T00:00:00Z").getUTCDay();
+// The date it is right now where the school is.
+function ymdIn(ms, tz) {
+  const p = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(ms));
+  const g = t => p.find(x => x.type === t).value;
+  return g("year") + "-" + g("month") + "-" + g("day");
+}
+// The moment a wall-clock time happens on a date in a time zone (daylight saving included).
+function zonedMs(ymd, hm, tz) {
+  const [y, mo, d] = ymd.split("-").map(Number), [h, mi] = hm.split(":").map(Number);
+  const want = Date.UTC(y, mo - 1, d, h, mi);
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" });
+  let t = want;
+  for (let i = 0; i < 3; i++) {
+    const p = fmt.formatToParts(new Date(t)), g = k => Number(p.find(x => x.type === k).value);
+    const seen = Date.UTC(g("year"), g("month") - 1, g("day"), g("hour") % 24, g("minute"));
+    if (seen === want) break;
+    t += want - seen;
+  }
+  return t;
+}
+// Monday first: "Tue and Thu", "Mon, Wed and Fri".
+const weekOrder = d => (d + 6) % 7;
+function daysText(days) {
+  const n = days.slice().sort((x, y) => weekOrder(x) - weekOrder(y)).map(d => DAY_SHORT[d]);
+  return n.length < 2 ? n.join("") : n.slice(0, -1).join(", ") + " and " + n[n.length - 1];
+}
+function timeText(hm) { const [h, m] = hm.split(":").map(Number); return (h % 12 || 12) + ":" + String(m).padStart(2, "0") + (h < 12 ? " AM" : " PM"); }
+function normSeries(b, st) {
+  const kind = EVENT_KINDS[b.kind] ? b.kind : "scrim";
+  const opponent = cleanText(b.opponent, 60).replace(/\s+/g, " ").trim();
+  if (!opponent) fail(400, kind === "film" ? "Say what you're reviewing." : "Enter the opponent (or TBD).");
+  const days = Array.from(new Set((Array.isArray(b.days) ? b.days : []).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6))).sort((x, y) => weekOrder(x) - weekOrder(y));
+  if (!days.length) fail(400, "Pick at least one day of the week.");
+  const time = String(b.time || "");
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) fail(400, "Pick a time.");
+  const startsOn = String(b.startsOn || "");
+  if (!isYmd(startsOn) || Math.abs(Date.parse(startsOn) - Date.now()) > 730 * 864e5) fail(400, "Pick the day it starts.");
+  const until = b.until ? String(b.until) : null;
+  if (until && (!isYmd(until) || until < startsOn || Date.parse(until) - Date.now() > 730 * 864e5)) fail(400, "The last day has to be after the first.");
+  const ids = st.rosters.map(r => r.id);
+  const teams = ids.filter(t => Array.isArray(b.teams) && b.teams.includes(t));
+  if (!teams.length) fail(400, "Pick at least one roster.");
+  return { kind, opponent, days, time, startsOn, until, format: cleanText(b.format, 40).trim(), details: cleanText(b.details, 1000).trim(), link: webLink(b.link, "link"), teams };
+}
+function pubSeries(row) {
+  const s = parse(row.data, {});
+  return { id: row.id, kind: s.kind, opponent: s.opponent, days: s.days, time: s.time, startsOn: s.startsOn, until: s.until || null, format: s.format || "", details: s.details || "", link: s.link || "", teams: s.teams || [] };
+}
+const seriesText = s => "Every " + daysText(s.days) + " at " + timeText(s.time);
+const lowerFirst = t => t.charAt(0).toLowerCase() + t.slice(1);
+// An occurrence a coach changed on its own keeps that change when the series is edited.
+const ownEdit = r => { const x = parse(r.format, null); return isPlain(x) && x.own === true; };
+const fitsSeries = (s, slot) => s.days.includes(dow(slot)) && slot >= s.startsOn && (!s.until || slot <= s.until);
+// Make any missing events for this school's series, through two weeks from today. Days a coach
+// deleted (skips) and days already made are left alone. Cheap when there's nothing to do.
+async function fillSeries(db, school, st) {
+  const now = Date.now(), today = ymdIn(now, st.tz), through = addDaysYmd(today, SERIES_AHEAD_DAYS);
+  const { results } = await db.prepare("SELECT * FROM series WHERE school_id = ? AND filled_to < ?").bind(school.id, through).all();
+  for (const row of results) {
+    const s = parse(row.data, null), ops = [];
+    if (isPlain(s) && Array.isArray(s.days)) {
+      const have = new Set((await db.prepare("SELECT slot FROM events WHERE series_id = ?").bind(row.id).all()).results.map(r => r.slot));
+      const skips = new Set(Array.isArray(s.skips) ? s.skips : []);
+      const to = s.until && s.until < through ? s.until : through;
+      for (let d = s.startsOn > today ? s.startsOn : today; d <= to; d = addDaysYmd(d, 1)) {
+        if (!fitsSeries(s, d) || skips.has(d) || have.has(d)) continue;
+        const at = zonedMs(d, s.time, st.tz);
+        if (at <= now) continue;
+        ops.push(db.prepare("INSERT OR IGNORE INTO events (id, school_id, kind, opponent, starts_at, format, details, link, teams, result, created_at, updated_at, series_id, slot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)")
+          .bind(newId(), school.id, s.kind, s.opponent, at, packFormat({ format: s.format, reviews: [] }), s.details, s.link, JSON.stringify(s.teams), now, now, row.id, d));
+      }
+    }
+    ops.push(db.prepare("UPDATE series SET filled_to = ? WHERE id = ?").bind(through, row.id));
+    await db.batch(ops);
+  }
+}
 
 /* ---------- One school's routes ---------- */
 async function route(ctx, segs) {
@@ -898,13 +1021,14 @@ async function route(ctx, segs) {
   /* Schedule (players see their roster's events; coaches use coach/events) */
   if (key === "GET events") {
     if (!canSeeSched(user, st)) return json({ access: false, events: [] });
+    await fillSeries(db, school, st);
     const { results } = await db.prepare("SELECT * FROM events WHERE school_id = ? AND starts_at >= ? ORDER BY starts_at LIMIT 300").bind(school.id, Date.now() - SCHED_PAST_MS).all();
-    const rows = results.filter(r => parse(r.teams, []).includes(user.team));
+    const rows = results.filter(r => onEvent(user, st, parse(r.teams, [])));
     return json({ access: true, events: await eventsWithRsvps(db, rows, user.id) });
   }
   if (a === "events" && b && c === "rsvp" && method === "PUT") {
     const ev = await db.prepare("SELECT * FROM events WHERE id = ? AND school_id = ?").bind(b, school.id).first();
-    if (!ev || !canSeeSched(user, st) || !parse(ev.teams, []).includes(user.team)) fail(404, "That event isn't on your schedule.");
+    if (!ev || !onEvent(user, st, parse(ev.teams, []))) fail(404, "That event isn't on your schedule.");
     if (ev.starts_at < Date.now() - 6 * 3600e3) fail(400, "That one already happened.");
     const status = RSVP.includes(body.status) ? body.status : "";
     if (status) await db.prepare("INSERT INTO rsvps (event_id, user_id, status, at) VALUES (?, ?, ?, ?) ON CONFLICT(event_id, user_id) DO UPDATE SET status = excluded.status, at = excluded.at").bind(b, user.id, status, Date.now()).run();
@@ -985,9 +1109,9 @@ async function route(ctx, segs) {
   }
   if (method === "GET" && a === "leaderboard" && b && !c) {
     // Effort this week, per member of this school: sessions finished, then ranked games. Names and counts only.
-    // Coaches only show up once they've logged something themselves.
+    // Coaches who also play are on it like anyone on a roster; other coaches once they've logged something.
     const wk = weekId(b);
-    const { results } = await db.prepare("SELECT u.username AS name, u.role AS role, w.data AS data FROM users u LEFT JOIN weeks w ON w.user_id = u.id AND w.week = ? WHERE u.school_id = ? AND u.role IN ('player', 'coach')").bind(wk, school.id).all();
+    const { results } = await db.prepare("SELECT u.username AS name, CASE WHEN u.team IS NULL OR u.team = '' THEN u.role ELSE 'player' END AS role, w.data AS data FROM users u LEFT JOIN weeks w ON w.user_id = u.id AND w.week = ? WHERE u.school_id = ? AND u.role IN ('player', 'coach')").bind(wk, school.id).all();
     const rows = results.map(r => {
       const d = parse(r.data, {});
       let games = 0, sessions = 0;
@@ -1044,9 +1168,11 @@ async function route(ctx, segs) {
       const url = trackerUrl(raw);
       if (raw && !url) fail(400, "That isn't a Rocket League Tracker profile link.");
       const id = newId();
-      const team = role === "coach" ? null : rosterIds.includes(body.team) ? body.team : rosterIds[0];
-      await db.prepare("INSERT INTO users (id, school_id, username, role, team, pw_hash, tracker_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(id, school.id, name, role, team, await makePw(pw), url || null, Date.now()).run();
+      // A coach can also play on a roster; a player is always on one.
+      const team = rosterIds.includes(body.team) ? body.team : role === "coach" ? null : rosterIds[0];
+      const subs = normSubs(body.subs, team, rosterIds);
+      await db.prepare("INSERT INTO users (id, school_id, username, role, team, pw_hash, tracker_url, created_at, subs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(id, school.id, name, role, team, await makePw(pw), url || null, Date.now(), subs.length ? JSON.stringify(subs) : null).run();
       const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
       return json({ player: pub(u) });
     }
@@ -1116,14 +1242,14 @@ async function route(ctx, segs) {
       }
       if (!segs[3] && method === "PATCH") {
         const sets = [], vals = [], extra = [];
-        // Only the Backpost admin can make someone a coach or a player.
-        let role = target.role;
+        // Only the Backpost admin can make someone a coach or a player. A player made a coach keeps
+        // playing on their roster (the coach view takes them off it with "Doesn't play").
+        let role = target.role, team = target.team || null;
         if ("role" in body && body.role !== target.role) {
           if (!user.admin) fail(403, "Only the Backpost admin can change who's a coach.");
           role = body.role === "coach" ? "coach" : "player";
           sets.push("role = ?"); vals.push(role);
-          if (role === "player" && !("team" in body) && !rosterIds.includes(target.team)) { sets.push("team = ?"); vals.push(rosterIds[0]); }
-          if (role === "coach") sets.push("team = NULL");
+          if (role === "player" && !("team" in body) && !rosterIds.includes(target.team)) { sets.push("team = ?"); vals.push(rosterIds[0]); team = rosterIds[0]; }
         }
         if ("name" in body) {
           const name = cleanName(body.name);
@@ -1132,10 +1258,21 @@ async function route(ctx, segs) {
           sets.push("username = ?"); vals.push(name);
         }
         if ("team" in body) {
-          if (role === "coach") fail(400, "Coaches aren't on a roster.");
-          if (!rosterIds.includes(body.team)) fail(400, "Pick one of your rosters.");
-          sets.push("team = ?"); vals.push(body.team);
+          // A coach can play on a roster or not play (no roster); a player is always on one.
+          const none = body.team === null || body.team === "";
+          if (none && role !== "coach") fail(400, "Pick one of your rosters.");
+          if (!none && !rosterIds.includes(body.team)) fail(400, "Pick one of your rosters.");
+          // A coach who starts playing is new to the roster from today, like a new player.
+          if (role === "coach" && !target.team && !none) { sets.push("plays_since = ?"); vals.push(Date.now()); }
+          if (role === "coach" && none) sets.push("plays_since = NULL");
+          team = none ? null : body.team;
+          sets.push("team = ?"); vals.push(team);
         }
+        // Rosters they sub for. A new main roster comes off this list; no main roster means none.
+        if ("subs" in body && !Array.isArray(body.subs)) fail(400, "Bad request.");
+        if ("subs" in body && body.subs.length && !team) fail(400, "Put them on a main roster first.");
+        const subsWas = rostersOf(target).slice(1), subsNow = normSubs("subs" in body ? body.subs : subsWas, team, rosterIds);
+        if (JSON.stringify(subsNow) !== JSON.stringify(subsWas) || ("subs" in body && target.subs && !subsNow.length)) { sets.push("subs = ?"); vals.push(subsNow.length ? JSON.stringify(subsNow) : null); }
         if ("trackerUrl" in body) {
           const raw = String(body.trackerUrl || "").trim();
           const url = trackerUrl(raw);
@@ -1149,7 +1286,7 @@ async function route(ctx, segs) {
           extra.push(db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(c));
         }
         if ("targets" in body) {
-          if (role === "coach") fail(400, "Coaches don't have a weekly requirement.");
+          if (!team) fail(400, "Put them on a roster first. Coaches who don't play have no weekly requirement.");
           const t = isPlain(body.targets) ? body.targets : {};
           const own = v => (v === null || v === undefined || v === "" ? null : intIn(v, 14));
           const log = logPut(normPlayerLog(parse(target.targets, [])), { from: weekFrom(body.from), ranked: own(t.ranked), training: own(t.training) }, { from: LOG_START, ranked: null, training: null });
@@ -1182,13 +1319,21 @@ async function route(ctx, segs) {
       // A roster can only be removed once nobody is on it.
       const gone = st.rosters.filter(r => !s.rosters.some(x => x.id === r.id));
       if (gone.length) {
-        const { results } = await db.prepare("SELECT team, COUNT(*) AS n FROM users WHERE school_id = ? AND role = 'player' GROUP BY team").bind(school.id).all();
+        const { results } = await db.prepare("SELECT team, COUNT(*) AS n FROM users WHERE school_id = ? AND team IS NOT NULL GROUP BY team").bind(school.id).all();
         for (const r of gone) {
           const hit = results.find(x => x.team === r.id);
           if (hit && hit.n) fail(400, "Move the " + hit.n + " player" + (hit.n === 1 ? "" : "s") + " on " + r.name + " to another roster first.");
         }
       }
       await putSettings(db, school, s);
+      // A removed roster comes off everyone's sub list.
+      if (gone.length) {
+        const keep = s.rosters.map(r => r.id);
+        const { results } = await db.prepare("SELECT id, team, subs FROM users WHERE school_id = ? AND subs IS NOT NULL").bind(school.id).all();
+        const ops = results.map(u => [u, normSubs(parse(u.subs, []), u.team, keep)]).filter(([u, n]) => JSON.stringify(n) !== JSON.stringify(rostersOf(u).slice(1)))
+          .map(([u, n]) => db.prepare("UPDATE users SET subs = ? WHERE id = ?").bind(n.length ? JSON.stringify(n) : null, u.id));
+        if (ops.length) await db.batch(ops);
+      }
       return json({ settings: s });
     }
     if (key === "PUT coach/asset") {
@@ -1216,8 +1361,56 @@ async function route(ctx, segs) {
       return json({ settings: s });
     }
     if (key === "GET coach/events") {
+      await fillSeries(db, school, st);
       const { results } = await db.prepare("SELECT * FROM events WHERE school_id = ? AND starts_at >= ? ORDER BY starts_at LIMIT 300").bind(school.id, Date.now() - SCHED_PAST_MS).all();
-      return json({ events: await eventsWithRsvps(db, results, null) });
+      const today = ymdIn(Date.now(), st.tz);
+      const sr = (await db.prepare("SELECT * FROM series WHERE school_id = ? ORDER BY created_at").bind(school.id).all()).results.map(pubSeries).filter(s => !s.until || s.until >= today);
+      return json({ events: await eventsWithRsvps(db, results, null), series: sr });
+    }
+    /* Weekly events */
+    if (key === "POST coach/series") {
+      const s = normSeries(body, st), id = newId();
+      await db.prepare("INSERT INTO series (id, school_id, data, filled_to, created_at) VALUES (?, ?, ?, '', ?)").bind(id, school.id, JSON.stringify(Object.assign({}, s, { skips: [] })), Date.now()).run();
+      await fillSeries(db, school, st);
+      const first = await db.prepare("SELECT starts_at FROM events WHERE series_id = ? ORDER BY starts_at LIMIT 1").bind(id).first();
+      if (first) later(eventAudience(db, school, st, s.teams).then(ids => notifyS(ids, { title: "Every week: " + eventTitle(s), body: seriesText(s) + ". First one " + fmtWhen(first.starts_at, st.tz) + ".", url: goUrl(school, "go=schedule"), tag: "sr-" + id })));
+      return json({ series: pubSeries({ id, data: JSON.stringify(s) }) });
+    }
+    if (b === "series" && c && method === "PUT") {
+      const row = await db.prepare("SELECT * FROM series WHERE id = ? AND school_id = ?").bind(c, school.id).first();
+      if (!row) fail(404, "That weekly event no longer exists.");
+      const prev = parse(row.data, {}), s = normSeries(body, st), now = Date.now();
+      await db.prepare("UPDATE series SET data = ?, filled_to = '' WHERE id = ?").bind(JSON.stringify(Object.assign({}, s, { skips: Array.isArray(prev.skips) ? prev.skips : [] })), c).run();
+      // Upcoming events from this series follow the change (answers stay); days no longer picked are taken off.
+      // One a coach changed on its own is left as it is.
+      const { results } = await db.prepare("SELECT * FROM events WHERE series_id = ? AND starts_at > ?").bind(c, now).all();
+      const ops = [];
+      for (const r of results) {
+        if (ownEdit(r)) continue;
+        const at = fitsSeries(s, r.slot) ? zonedMs(r.slot, s.time, st.tz) : 0;
+        if (at > now) ops.push(db.prepare("UPDATE events SET kind = ?, opponent = ?, starts_at = ?, format = ?, details = ?, link = ?, teams = ?, updated_at = ? WHERE id = ?").bind(s.kind, s.opponent, at, packFormat({ format: s.format, reviews: [] }), s.details, s.link, JSON.stringify(s.teams), now, r.id));
+        else ops.push(db.prepare("DELETE FROM rsvps WHERE event_id = ?").bind(r.id), db.prepare("DELETE FROM events WHERE id = ?").bind(r.id));
+      }
+      if (ops.length) await db.batch(ops);
+      await fillSeries(db, school, st);
+      const moved = prev.time !== s.time || String(prev.days) !== String(s.days);
+      if (moved) later(eventAudience(db, school, st, Array.from(new Set((prev.teams || []).concat(s.teams)))).then(ids => notifyS(ids, { title: "Changed: " + eventTitle(s), body: "Now " + lowerFirst(seriesText(s)) + ".", url: goUrl(school, "go=schedule"), tag: "sr-" + c })));
+      return json({ series: pubSeries({ id: c, data: JSON.stringify(s) }) });
+    }
+    if (b === "series" && c && method === "DELETE") {
+      // Stop repeating: upcoming events from it come off the schedule (ones changed on their own stay);
+      // past ones stay as ordinary events.
+      const row = await db.prepare("SELECT * FROM series WHERE id = ? AND school_id = ?").bind(c, school.id).first();
+      if (!row) return json({ ok: true });
+      const s = parse(row.data, {}), now = Date.now();
+      const { results } = await db.prepare("SELECT * FROM events WHERE series_id = ? AND starts_at > ?").bind(c, now).all();
+      const gone = results.filter(r => !ownEdit(r));
+      await db.batch(gone.flatMap(r => [db.prepare("DELETE FROM rsvps WHERE event_id = ?").bind(r.id), db.prepare("DELETE FROM events WHERE id = ?").bind(r.id)]).concat([
+        db.prepare("UPDATE events SET series_id = NULL WHERE series_id = ?").bind(c),
+        db.prepare("DELETE FROM series WHERE id = ?").bind(c)
+      ]));
+      if (gone.length && Array.isArray(s.days)) later(eventAudience(db, school, st, s.teams || []).then(ids => notifyS(ids, { title: "Canceled: " + eventTitle(s), body: "No longer " + lowerFirst(seriesText(s)) + ".", url: goUrl(school, "go=schedule"), tag: "sr-" + c })));
+      return json({ ok: true, removed: gone.length });
     }
     if (key === "POST coach/events") {
       const e = normEvent(body, st), id = newId(), now = Date.now();
@@ -1231,8 +1424,13 @@ async function route(ctx, segs) {
       const prev = await db.prepare("SELECT * FROM events WHERE id = ? AND school_id = ?").bind(c, school.id).first();
       if (!prev) fail(404, "That event no longer exists.");
       const e = normEvent(body, st);
+      // A weekly event changed on its own keeps that change when its series is edited. (Adding just a
+      // result after it happened doesn't count as changing it.)
+      const px = parse(prev.format, null), sig = x => JSON.stringify([x.kind, x.opponent, x.format, x.details, x.link, x.teams, x.startsAt]);
+      const was = { kind: prev.kind, opponent: prev.opponent, format: isPlain(px) ? px.format || "" : prev.format || "", details: prev.details || "", link: prev.link || "", teams: parse(prev.teams, []), startsAt: prev.starts_at };
+      const own = !!prev.series_id && (ownEdit(prev) || sig(e) !== sig(was));
       await db.prepare("UPDATE events SET kind = ?, opponent = ?, starts_at = ?, format = ?, details = ?, link = ?, teams = ?, result = ?, updated_at = ? WHERE id = ? AND school_id = ?")
-        .bind(e.kind, e.opponent, e.startsAt, packFormat(e), e.details, e.link, JSON.stringify(e.teams), e.result, Date.now(), c, school.id).run();
+        .bind(e.kind, e.opponent, e.startsAt, packFormat(e, own), e.details, e.link, JSON.stringify(e.teams), e.result, Date.now(), c, school.id).run();
       // Only a new time is worth a notification (and only for events still ahead).
       if (e.startsAt !== prev.starts_at && e.startsAt > Date.now()) later(eventAudience(db, school, st, e.teams).then(ids => notifyS(ids, { title: "Moved: " + eventTitle(e), body: "Now " + fmtWhen(e.startsAt, st.tz), url: goUrl(school, "go=schedule"), tag: "ev-" + c })));
       const row = await db.prepare("SELECT * FROM events WHERE id = ?").bind(c).first();
@@ -1241,7 +1439,15 @@ async function route(ctx, segs) {
     if (b === "events" && c && method === "DELETE") {
       const prev = await db.prepare("SELECT * FROM events WHERE id = ? AND school_id = ?").bind(c, school.id).first();
       if (!prev) return json({ ok: true });
-      await db.batch([db.prepare("DELETE FROM rsvps WHERE event_id = ?").bind(c), db.prepare("DELETE FROM events WHERE id = ? AND school_id = ?").bind(c, school.id)]);
+      const ops = [db.prepare("DELETE FROM rsvps WHERE event_id = ?").bind(c), db.prepare("DELETE FROM events WHERE id = ? AND school_id = ?").bind(c, school.id)];
+      // One week off from a weekly event: remember the day so it isn't made again.
+      const sr = prev.series_id ? await db.prepare("SELECT data FROM series WHERE id = ? AND school_id = ?").bind(prev.series_id, school.id).first() : null;
+      if (sr && prev.slot) {
+        const s = parse(sr.data, {});
+        s.skips = Array.from(new Set((Array.isArray(s.skips) ? s.skips : []).concat([prev.slot]))).sort().slice(-200);
+        ops.push(db.prepare("UPDATE series SET data = ? WHERE id = ?").bind(JSON.stringify(s), prev.series_id));
+      }
+      await db.batch(ops);
       if (prev.starts_at > Date.now()) later(eventAudience(db, school, st, parse(prev.teams, [])).then(ids => notifyS(ids, { title: "Canceled: " + eventTitle(prev), body: "Was " + fmtWhen(prev.starts_at, st.tz), url: goUrl(school, "go=schedule"), tag: "ev-" + c })));
       return json({ ok: true });
     }
@@ -1298,7 +1504,7 @@ function adminAsCoach(adm, school) {
   return {
     id: "admin-" + adm.id, username: adm.username, role: "coach", team: null, school_id: school.id, admin: true,
     tracker_url: "", ranks: null, active: null, custom_focus: null, targets: null, prefs: null,
-    created_at: adm.created_at, s_exp: Infinity, s_hash: null
+    created_at: adm.created_at, subs: null, s_exp: Infinity, s_hash: null
   };
 }
 async function currentAdmin(db, req) {
@@ -1439,7 +1645,7 @@ async function adminRoute(ctx, segs) {
         const move = t => db.prepare("UPDATE " + t + " SET school_id = ? WHERE school_id = ?").bind(want, b);
         await db.batch([
           db.prepare("UPDATE schools SET id = ? WHERE id = ?").bind(want, b),
-          move("school_settings"), move("school_assets"), move("users"), move("weeks"), move("reviews"), move("events"), move("invites"),
+          move("school_settings"), move("school_assets"), move("users"), move("weeks"), move("reviews"), move("events"), move("series"), move("invites"),
           ...(data ? [db.prepare("UPDATE school_settings SET data = ? WHERE school_id = ?").bind(data, want)] : []),
           db.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE school_id = ?)").bind(want)
         ]);
@@ -1462,6 +1668,7 @@ async function adminRoute(ctx, segs) {
         db.prepare("DELETE FROM weeks WHERE school_id = ?").bind(b),
         db.prepare("DELETE FROM reviews WHERE school_id = ?").bind(b),
         db.prepare("DELETE FROM events WHERE school_id = ?").bind(b),
+        db.prepare("DELETE FROM series WHERE school_id = ?").bind(b),
         db.prepare("DELETE FROM invites WHERE school_id = ?").bind(b),
         db.prepare("DELETE FROM school_assets WHERE school_id = ?").bind(b),
         db.prepare("DELETE FROM school_settings WHERE school_id = ?").bind(b),
