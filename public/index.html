@@ -49,7 +49,7 @@
   });
 })();
 </script>
-<link rel="stylesheet" href="/style.css?v=5950cf694f">
+<link rel="stylesheet" href="/style.css?v=4e50185275">
 </head>
 <body>
 
@@ -205,7 +205,7 @@
               <label class="fld"><span class="lbl">Name</span><input type="text" id="addName" maxlength="32" autocomplete="off" spellcheck="false"></label>
               <label class="fld"><span class="lbl">Password</span><span class="pw-row"><input type="text" id="addPw" maxlength="128" autocomplete="off" spellcheck="false"><button type="button" class="btn sm" id="addGen">New</button></span></label>
               <label class="fld" id="addRoleRow" hidden><span class="lbl">Account</span><select id="addRole"><option value="player">Player</option><option value="coach">Coach</option></select></label>
-              <label class="fld" id="addTeamRow"><span class="lbl">Roster</span><select id="addTeam"></select></label>
+              <label class="fld" id="addTeamRow"><span class="lbl" id="addTeamLbl">Roster</span><select id="addTeam"></select></label>
               <label class="fld"><span class="lbl">Tracker link</span><input type="url" id="addTracker" placeholder="rocketleague.tracker.network/…" autocomplete="off"></label>
             </div>
             <p class="status" id="addStatus" role="status"></p>
@@ -231,6 +231,10 @@
         <div class="tbar"><h2 class="ttl" id="tSchedC">Schedule</h2><button type="button" class="btn sm primary push" id="evNew">Add event</button></div>
         <div class="wbody">
           <div id="evFormBox"></div>
+          <div class="series-box" id="seriesBox" hidden>
+            <h3 class="sub-h">Every week</h3>
+            <ul class="wk-list" id="seriesList"></ul>
+          </div>
           <div class="sched" id="schedListC"></div>
         </div>
       </section>
@@ -343,6 +347,14 @@
     <div class="wbody">
       <p class="acc-name" id="accName"></p>
       <div class="row" id="accSwitch" hidden><button type="button" class="btn" id="accView"></button></div>
+    </div>
+    <div class="wbody" id="accPlay" hidden>
+      <div class="grp">
+        <h3>Play on a roster</h3>
+        <p class="fine">Coaches can play too. On a roster you get its schedule, the weekly requirement and a spot on the team board, like any player.</p>
+        <label class="fld acc-team"><span class="lbl">You play on</span><select id="accTeam"></select></label>
+        <p class="status" id="accTeamStatus" role="status"></p>
+      </div>
     </div>
     <form class="wbody" id="pwForm" novalidate>
       <div class="grp">
@@ -518,7 +530,7 @@
   <footer class="powered"><a href="https://getbackpost.com">Powered by <img src="/bp/mark.png" alt="" width="31" height="26"> <span>Backpost</span></a></footer>
 </div>
 
-<script src="/app.js?v=3471f1c7f5" defer></script>
+<script src="/app.js?v=fe01399d4e" defer></script>
 <script src="/site.js?v=3e50744e85" defer></script>
 </body>
 </html>

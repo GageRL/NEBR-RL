@@ -184,6 +184,7 @@ html[data-shape="rounded"] .ttl{clip-path:none;border-radius:12px 12px 0 0;paddi
 .wbody{padding:16px 0 0;display:grid;gap:14px;min-width:0}
 .account{width:100%;max-width:520px;justify-self:start}
 .acc-name{font:var(--d-w) 24px/1.1 var(--display);text-transform:uppercase;letter-spacing:.01em}
+.acc-team select{max-width:280px}
 
 /* ---------- Controls ---------- */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 16px;border:2px solid var(--ink);border-radius:var(--r);background:none;color:var(--ink);font:var(--d-w) 15px/1 var(--display);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;text-decoration:none;transition:background-color .12s,color .12s,filter .12s}
@@ -438,6 +439,7 @@ button.rrow[aria-current="true"]{background:var(--brand);color:var(--on-brand);b
 .rrow.rh{padding-block:9px 7px;font:var(--d-w) 14px var(--display);text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid var(--ink);color:var(--muted)}
 .rname{font-weight:600;overflow-wrap:anywhere}
 .bteam{margin-left:8px;font:500 13px var(--text);color:var(--muted)}
+.bteam.brole{color:var(--brand-text);font-weight:600}
 .rc{font:var(--d-w) 17px var(--display);font-variant-numeric:tabular-nums}
 .rc.met::after{content:" ✓";font-size:13px}
 .pill{justify-self:start;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:2px solid var(--ink);border-radius:var(--r);font:var(--d-w) 13px/1 var(--display);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
@@ -490,6 +492,16 @@ html[data-accent="no"] .ev-scrim{border-left-color:var(--line-2)}
 .ev-title{font:var(--d-w) 20px/1.1 var(--display);text-transform:uppercase;letter-spacing:.02em;overflow-wrap:anywhere}
 .ev-meta,.ev-who{font-size:13.5px;color:var(--muted)}
 .ev-details{padding:7px 10px;background:var(--tint);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+/* Weekly events (coach): what repeats, above the dated list */
+.series-box{display:grid;gap:10px;margin-bottom:16px;padding-bottom:16px;border-bottom:2px solid var(--line)}
+.series-box .sub-h{margin:0}
+.wk-list{display:grid;gap:10px}
+.wk-ev{display:grid;gap:5px;padding:12px 14px;background:var(--surface);border:1.5px solid var(--line);border-left:6px solid var(--brand);border-radius:var(--r-lg)}
+.wk-ev.ev-scrim{border-left-color:var(--accent)}
+html[data-accent="no"] .wk-ev.ev-scrim{border-left-color:var(--line-2)}
+.wk-ev.ev-film{border-left-color:var(--ink)}
+.wk-when{font:600 15px/1.3 var(--text)}
+.ev-one{margin:-4px 0 4px}
 .ev-reviews{display:grid;gap:3px;font-size:13.5px}
 .ev-reviews li::before{content:"\25B8  ";color:var(--brand-text)}
 .rsvp{display:inline-flex;justify-self:start;border:2px solid var(--ink);border-radius:var(--r)}
