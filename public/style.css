@@ -521,6 +521,7 @@ html[data-accent="no"] .wk-ev.ev-scrim{border-left-color:var(--line-2)}
 #pdName{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .pd-team{display:flex;align-items:center;gap:10px}
 .pd-team select{width:auto;min-width:150px;min-height:36px;padding-block:5px}
+.pd-subs{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px}
 .pd-day{display:grid;gap:8px;padding-top:12px;border-top:1.5px solid var(--line)}
 .pd-day h4{font:var(--d-w) 16px var(--display);text-transform:uppercase;letter-spacing:.04em}
 .pd-sess{display:grid;gap:4px;padding:2px 0 2px 14px;border-left:3px solid var(--brand)}

@@ -88,7 +88,8 @@ const TABLES = [
      fail_count INTEGER NOT NULL DEFAULT 0,
      locked_until INTEGER NOT NULL DEFAULT 0,
      created_at INTEGER NOT NULL,
-     plays_since INTEGER
+     plays_since INTEGER,
+     subs TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS sessions (
      token_hash TEXT PRIMARY KEY,
@@ -488,7 +489,7 @@ function pub(u) {
     customFocus: parse(u.custom_focus, []),
     targetsLog: normPlayerLog(parse(u.targets, [])),
     prefs: normPrefs(parse(u.prefs, {})),
-    createdAt: u.created_at, playsSince: u.plays_since || null,
+    createdAt: u.created_at, playsSince: u.plays_since || null, subs: rostersOf(u).slice(1),
     ...(u.admin ? { admin: true } : {})
   };
 }
@@ -506,6 +507,18 @@ function publicSettings(s) {
 async function nameTaken(db, school, name, exceptId) {
   const row = await db.prepare("SELECT id FROM users WHERE school_id = ? AND username = ? COLLATE NOCASE").bind(school.id, name).first();
   return !!row && row.id !== exceptId;
+}
+// Every roster someone plays on: their main one first, then any they sub for. The main roster sets
+// their weekly requirement; all of them bring that roster's schedule and notifications.
+function rostersOf(u) {
+  if (!u || !u.team) return [];
+  const extra = Array.isArray(u.subs) ? u.subs : parse(u.subs, []);
+  return [u.team].concat((Array.isArray(extra) ? extra : []).filter(t => typeof t === "string" && t !== u.team).filter((t, i, a) => a.indexOf(t) === i).slice(0, 10));
+}
+// Rosters someone subs for: real rosters only, never their main one.
+function normSubs(raw, team, rosterIds) {
+  if (!team) return [];
+  return rosterIds.filter(t => t !== team && Array.isArray(raw) && raw.includes(t));
 }
 // Any member of this school by id (never another school's).
 async function member(db, school, id) {
@@ -645,7 +658,7 @@ async function ensureSchema(db) {
 async function migrateV2(db, prev) {
   let userCols = await columns(db, "users");
   // Columns added over the original site's life (older databases may be missing them).
-  for (const c of ["team", "targets", "prefs"]) if (!userCols.includes(c)) await db.prepare("ALTER TABLE users ADD COLUMN " + c + " TEXT").run();
+  for (const c of ["team", "targets", "prefs", "subs"]) if (!userCols.includes(c)) await db.prepare("ALTER TABLE users ADD COLUMN " + c + " TEXT").run();
   // When a coach started playing on a roster (schema 3); earlier weeks don't count against them.
   if (!userCols.includes("plays_since")) await db.prepare("ALTER TABLE users ADD COLUMN plays_since INTEGER").run();
   userCols = await columns(db, "users");
@@ -845,14 +858,17 @@ async function eventsWithRsvps(db, rows, me) {
   return rows.map(r => pubEvent(r, results, me));
 }
 const fmtWhen = (ms, tz) => new Date(ms).toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-// Who can see an event: anyone on one of its rosters (players, and coaches who also play), if that roster sees the Schedule.
+// Who can see an event: anyone on one of its rosters, as their main roster or one they sub for
+// (players, and coaches who also play), if that roster sees the Schedule.
 async function eventAudience(db, school, st, teams) {
   const ok = teams.filter(t => st.schedRosters.includes(t));
   if (!ok.length || !st.features.schedule) return [];
-  const { results } = await db.prepare("SELECT id FROM users WHERE school_id = ? AND team IN (" + ok.map(() => "?").join(", ") + ")").bind(school.id, ...ok).all();
-  return results.map(r => r.id);
+  const { results } = await db.prepare("SELECT id, team, subs FROM users WHERE school_id = ? AND team IS NOT NULL").bind(school.id).all();
+  return results.filter(u => rostersOf(u).some(t => ok.includes(t))).map(r => r.id);
 }
-const canSeeSched = (u, st) => st.features.schedule && !u.admin && !!u.team && st.schedRosters.includes(u.team);
+const schedRostersOf = (u, st) => st.features.schedule && !u.admin ? rostersOf(u).filter(t => st.schedRosters.includes(t)) : [];
+const canSeeSched = (u, st) => schedRostersOf(u, st).length > 0;
+const onEvent = (u, st, teams) => schedRostersOf(u, st).some(t => teams.includes(t));
 const eventTitle = e => e.kind === "film" ? "Film: " + e.opponent : EVENT_KINDS[e.kind] + " vs " + e.opponent;
 
 /* ---------- Weekly events: a series puts the same event on the schedule every week, on the days picked ---------- */
@@ -1007,12 +1023,12 @@ async function route(ctx, segs) {
     if (!canSeeSched(user, st)) return json({ access: false, events: [] });
     await fillSeries(db, school, st);
     const { results } = await db.prepare("SELECT * FROM events WHERE school_id = ? AND starts_at >= ? ORDER BY starts_at LIMIT 300").bind(school.id, Date.now() - SCHED_PAST_MS).all();
-    const rows = results.filter(r => parse(r.teams, []).includes(user.team));
+    const rows = results.filter(r => onEvent(user, st, parse(r.teams, [])));
     return json({ access: true, events: await eventsWithRsvps(db, rows, user.id) });
   }
   if (a === "events" && b && c === "rsvp" && method === "PUT") {
     const ev = await db.prepare("SELECT * FROM events WHERE id = ? AND school_id = ?").bind(b, school.id).first();
-    if (!ev || !canSeeSched(user, st) || !parse(ev.teams, []).includes(user.team)) fail(404, "That event isn't on your schedule.");
+    if (!ev || !onEvent(user, st, parse(ev.teams, []))) fail(404, "That event isn't on your schedule.");
     if (ev.starts_at < Date.now() - 6 * 3600e3) fail(400, "That one already happened.");
     const status = RSVP.includes(body.status) ? body.status : "";
     if (status) await db.prepare("INSERT INTO rsvps (event_id, user_id, status, at) VALUES (?, ?, ?, ?) ON CONFLICT(event_id, user_id) DO UPDATE SET status = excluded.status, at = excluded.at").bind(b, user.id, status, Date.now()).run();
@@ -1154,8 +1170,9 @@ async function route(ctx, segs) {
       const id = newId();
       // A coach can also play on a roster; a player is always on one.
       const team = rosterIds.includes(body.team) ? body.team : role === "coach" ? null : rosterIds[0];
-      await db.prepare("INSERT INTO users (id, school_id, username, role, team, pw_hash, tracker_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(id, school.id, name, role, team, await makePw(pw), url || null, Date.now()).run();
+      const subs = normSubs(body.subs, team, rosterIds);
+      await db.prepare("INSERT INTO users (id, school_id, username, role, team, pw_hash, tracker_url, created_at, subs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(id, school.id, name, role, team, await makePw(pw), url || null, Date.now(), subs.length ? JSON.stringify(subs) : null).run();
       const u = await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
       return json({ player: pub(u) });
     }
@@ -1251,6 +1268,11 @@ async function route(ctx, segs) {
           team = none ? null : body.team;
           sets.push("team = ?"); vals.push(team);
         }
+        // Rosters they sub for. A new main roster comes off this list; no main roster means none.
+        if ("subs" in body && !Array.isArray(body.subs)) fail(400, "Bad request.");
+        if ("subs" in body && body.subs.length && !team) fail(400, "Put them on a main roster first.");
+        const subsWas = rostersOf(target).slice(1), subsNow = normSubs("subs" in body ? body.subs : subsWas, team, rosterIds);
+        if (JSON.stringify(subsNow) !== JSON.stringify(subsWas) || ("subs" in body && target.subs && !subsNow.length)) { sets.push("subs = ?"); vals.push(subsNow.length ? JSON.stringify(subsNow) : null); }
         if ("trackerUrl" in body) {
           const raw = String(body.trackerUrl || "").trim();
           const url = trackerUrl(raw);
@@ -1304,6 +1326,14 @@ async function route(ctx, segs) {
         }
       }
       await putSettings(db, school, s);
+      // A removed roster comes off everyone's sub list.
+      if (gone.length) {
+        const keep = s.rosters.map(r => r.id);
+        const { results } = await db.prepare("SELECT id, team, subs FROM users WHERE school_id = ? AND subs IS NOT NULL").bind(school.id).all();
+        const ops = results.map(u => [u, normSubs(parse(u.subs, []), u.team, keep)]).filter(([u, n]) => JSON.stringify(n) !== JSON.stringify(rostersOf(u).slice(1)))
+          .map(([u, n]) => db.prepare("UPDATE users SET subs = ? WHERE id = ?").bind(n.length ? JSON.stringify(n) : null, u.id));
+        if (ops.length) await db.batch(ops);
+      }
       return json({ settings: s });
     }
     if (key === "PUT coach/asset") {
@@ -1473,7 +1503,7 @@ function adminAsCoach(adm, school) {
   return {
     id: "admin-" + adm.id, username: adm.username, role: "coach", team: null, school_id: school.id, admin: true,
     tracker_url: "", ranks: null, active: null, custom_focus: null, targets: null, prefs: null,
-    created_at: adm.created_at, s_exp: Infinity, s_hash: null
+    created_at: adm.created_at, subs: null, s_exp: Infinity, s_hash: null
   };
 }
 async function currentAdmin(db, req) {

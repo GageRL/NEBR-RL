@@ -47,6 +47,9 @@
   const freeTeam = t => { const x = rosterList().find(r => r.id === t); return !!(x && x.casual); };
   // Everyone on a roster plays: every player, and coaches who also play.
   const plays = u => !!(u && u.team);
+  // Their main roster first (it sets the weekly requirement), then any they sub for.
+  const rostersOf = u => plays(u) ? [u.team].concat((u.subs || []).filter(t => t !== u.team && teamName(t))) : [];
+  const subsText = u => rostersOf(u).slice(1).map(teamName).join(", ");
   // When someone's weeks start counting: when they joined, or when a coach started playing.
   const playsFrom = u => Math.max(u.createdAt || 0, u.playsSince || 0);
   const feat = f => S.settings.features[f] !== false;
@@ -159,7 +162,7 @@
     return out;
   }
   function normUser(u) {
-    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: typeof u.team === "string" && u.team ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0, playsSince: Number(u.playsSince) || 0, admin: u.admin === true };
+    return { id: u.id, name: str(u.name, 32), role: u.role === "coach" ? "coach" : "player", team: typeof u.team === "string" && u.team ? u.team : null, trackerUrl: str(u.trackerUrl, 300), ranks: normRanks(u.ranks), active: normActive(u.active), customFocus: Array.isArray(u.customFocus) ? u.customFocus.filter(f => typeof f === "string") : [], targetsLog: normLog(u.targetsLog, false), prefs: normPrefs(u.prefs), createdAt: Number(u.createdAt) || 0, playsSince: Number(u.playsSince) || 0, subs: Array.isArray(u.subs) ? u.subs.filter(t => typeof t === "string") : [], admin: u.admin === true };
   }
   function normPrefs(p) {
     const out = { layout: {} }, lay = isPlain(p) && isPlain(p.layout) ? p.layout : {};
@@ -540,7 +543,8 @@
   function renderAccount() {
     if (!S.me || S.me.admin) return;
     const coach = S.me.role === "coach";
-    $("#accName").textContent = S.me.name + (coach ? (S.me.team ? ", coach and " + teamName(S.me.team) + " player" : ", coach") : S.me.team ? ", " + teamName(S.me.team) : "");
+    const also = subsText(S.me) ? " (also " + subsText(S.me) + ")" : "";
+    $("#accName").textContent = S.me.name + (coach ? (S.me.team ? ", coach and " + teamName(S.me.team) + " player" + also : ", coach") : S.me.team ? ", " + teamName(S.me.team) + also : "");
     // A coach switches between the coach view and their own training here (phones) or in the sidebar.
     $("#accSwitch").hidden = !coach;
     $("#accView").textContent = S.view === "coach" ? "Switch to my training" : "Back to the coach view";
@@ -549,6 +553,21 @@
     if (coach && document.activeElement !== $("#accTeam")) teamSelect($("#accTeam"), true, S.me.team);
   }
   $("#accView").addEventListener("click", () => setView(S.view === "coach" ? "player" : "coach"));
+  // "Also plays on": every roster but their main one, checked where they sub. Hidden for someone not playing.
+  function fillSubs(box, p) {
+    if (!box || box.contains(document.activeElement)) return;
+    const others = rosterList().filter(r => r.id !== p.team);
+    box.hidden = !plays(p) || !others.length;
+    const k = JSON.stringify([others, p.subs]);
+    if (box.dataset.k === k) return;
+    box.dataset.k = k;
+    box.textContent = "";
+    box.append(mk("span", "lbl", "Also plays on"));
+    for (const r of others) {
+      const l = mk("label", "chk"), c = mk("input"); c.type = "checkbox"; c.value = r.id; c.checked = p.subs.includes(r.id);
+      l.append(c, document.createTextNode(" " + r.name)); box.append(l);
+    }
+  }
   // Roster picker. For a coach the first choice is not playing.
   function teamSelect(sel, coach, value) {
     const opts = (coach ? [["", "Doesn't play"]] : []).concat(rosterList().map(r => [r.id, r.name]));
@@ -1339,6 +1358,7 @@
       if (S.sel === x.id) b.setAttribute("aria-current", "true");
       const nm = mk("span", "rname", p.name);
       if (p.team) nm.append(mk("span", "bteam", teamName(p.team)));
+      if (subsText(p)) nm.append(mk("span", "bteam", "Also " + subsText(p)));
       if (p.role === "coach") nm.append(mk("span", "bteam brole", "Coach"));
       const pill = mk("span", "pill " + x.g, statusLabel(x));
       if (x.g === "live") pill.title = TYPES[p.active.type].label + " \u00b7 " + fmtDur(elapsedMin(p.active.startedAt));
@@ -1430,6 +1450,7 @@
     $("#pdName").textContent = p.name;
     const ts = $("#pdTeam");
     if (ts && document.activeElement !== ts) teamSelect(ts, p.role === "coach", p.team);
+    fillSubs($("#pdSubs"), p);
     const link = $("#pdTracker");
     link.hidden = !p.trackerUrl;
     if (p.trackerUrl) link.href = p.trackerUrl;
@@ -1753,6 +1774,20 @@
       });
       tr.append(sel);
       body.append(tr);
+      // Rosters they sub for: that roster's schedule and notifications too.
+      const sb = mk("div", "pd-subs");
+      sb.id = "pdSubs"; sb.setAttribute("role", "group"); sb.setAttribute("aria-label", "Also plays on");
+      sb.addEventListener("change", async ev => {
+        const c = ev.target.closest("input"); if (!c) return;
+        const subs = Array.from(sb.querySelectorAll("input:checked")).map(x => x.value);
+        sb.querySelectorAll("input").forEach(x => { x.disabled = true; });
+        const nm = teamName(c.value);
+        const ok = await patch({ subs }, c.checked ? "Also on " + nm + " now: its schedule and notifications." : "Off " + nm + ".");
+        sb.querySelectorAll("input").forEach(x => { x.disabled = false; });
+        if (!ok) { c.blur(); sb.dataset.k = ""; fillSubs(sb, S.roster[id]); }
+        if (id === S.me.id) { S.me.subs = S.roster[id].subs; refresh(); }
+      });
+      body.append(sb);
     }
     body.append(acts, status, forms);
     const stats = mk("div", "stack");
@@ -2068,7 +2103,8 @@
     const meta = [];
     if (e.series) meta.push("Weekly");
     if (e.format) meta.push(e.format);
-    if (coach || e.teams.length > 1) meta.push(e.teams.map(teamName).filter(Boolean).join(", "));
+    // Which roster it's for, when that isn't obvious (several rosters, or a player who subs for another).
+    if (coach || e.teams.length > 1 || (S.me && rostersOf(S.me).length > 1)) meta.push(e.teams.map(teamName).filter(Boolean).join(", "));
     if (e.result) meta.push("Result: " + e.result);
     if (meta.length) main.append(mk("p", "ev-meta", meta.join(" — ")));
     if (e.details) main.append(mk("p", "ev-details", e.details));
@@ -2096,7 +2132,7 @@
     const lines = ["in", "maybe", "out"].filter(k => tally[k].length).map(k => RSVP_L[k] + ": " + tally[k].join(", "));
     if (coach && future) {
       const answered = new Set(e.rsvps.map(r => r.userId));
-      const waiting = Object.values(S.roster).filter(p => plays(p) && e.teams.includes(p.team) && S.settings.schedRosters.includes(p.team) && !answered.has(p.id)).map(p => p.name).sort();
+      const waiting = Object.values(S.roster).filter(p => rostersOf(p).some(t => e.teams.includes(t) && S.settings.schedRosters.includes(t)) && !answered.has(p.id)).map(p => p.name).sort();
       if (waiting.length) lines.push("No answer: " + waiting.join(", "));
     }
     if (lines.length) main.append(mk("p", "ev-who", lines.join("  |  ")));
