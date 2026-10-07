@@ -50,6 +50,8 @@
   // Their main roster first (it sets the weekly requirement), then any they sub for.
   const rostersOf = u => plays(u) ? [u.team].concat((u.subs || []).filter(t => t !== u.team && teamName(t))) : [];
   const subsText = u => rostersOf(u).slice(1).map(teamName).join(", ");
+  // Position of a roster in the team's own order (Varsity first); no roster sorts last.
+  const rosterRank = t => { const i = rosterList().findIndex(r => r.id === t); return i < 0 ? rosterList().length : i; };
   // When someone's weeks start counting: when they joined, or when a coach started playing.
   const playsFrom = u => Math.max(u.createdAt || 0, u.playsSince || 0);
   const feat = f => S.settings.features[f] !== false;
@@ -1348,16 +1350,27 @@
       head.append(mk("span", "", "Player"), mk("span", "", "Ranked"), mk("span", "", "Training"), mk("span", "", "Status"));
       box.append(head);
     }
+    // Grouped by roster, in the team's own roster order (Varsity first). Within a roster, who needs
+    // attention comes first, then by name. Coaches who log training without playing come last.
+    const order = rosterRank;
     const rows = ids.map(id => Object.assign({ id }, playerStatus(id))).sort((x, y) =>
-      STATUS_RANK[x.g] - STATUS_RANK[y.g] || y.left - x.left || S.roster[x.id].name.localeCompare(S.roster[y.id].name, "en", { sensitivity: "base" }));
+      order(S.roster[x.id].team) - order(S.roster[y.id].team) || STATUS_RANK[x.g] - STATUS_RANK[y.g] || y.left - x.left || S.roster[x.id].name.localeCompare(S.roster[y.id].name, "en", { sensitivity: "base" }));
     const cell = (done, target) => mk("span", "rc" + (target > 0 && done >= target ? " met" : ""), target > 0 ? done + "/" + target : String(done));
+    let group;
     for (const x of rows) {
       const p = S.roster[x.id];
+      const g = order(p.team);
+      if (g !== group) {
+        group = g;
+        const n = rows.filter(y => order(S.roster[y.id].team) === g).length;
+        const h = mk("p", "rgroup");
+        h.append(mk("span", "", teamName(p.team) || "Not on a roster"), mk("span", "rgroup-n", String(n)));
+        box.append(h);
+      }
       const b = mk("button", "rrow");
       b.type = "button";
       if (S.sel === x.id) b.setAttribute("aria-current", "true");
       const nm = mk("span", "rname", p.name);
-      if (p.team) nm.append(mk("span", "bteam", teamName(p.team)));
       if (subsText(p)) nm.append(mk("span", "bteam", "Also " + subsText(p)));
       if (p.role === "coach") nm.append(mk("span", "bteam brole", "Coach"));
       const pill = mk("span", "pill " + x.g, statusLabel(x));
@@ -2132,7 +2145,8 @@
     const lines = ["in", "maybe", "out"].filter(k => tally[k].length).map(k => RSVP_L[k] + ": " + tally[k].join(", "));
     if (coach && future) {
       const answered = new Set(e.rsvps.map(r => r.userId));
-      const waiting = Object.values(S.roster).filter(p => rostersOf(p).some(t => e.teams.includes(t) && S.settings.schedRosters.includes(t)) && !answered.has(p.id)).map(p => p.name).sort();
+      const waiting = Object.values(S.roster).filter(p => rostersOf(p).some(t => e.teams.includes(t) && S.settings.schedRosters.includes(t)) && !answered.has(p.id))
+        .sort((x, y) => rosterRank(x.team) - rosterRank(y.team) || x.name.localeCompare(y.name, "en", { sensitivity: "base" })).map(p => p.name);
       if (waiting.length) lines.push("No answer: " + waiting.join(", "));
     }
     if (lines.length) main.append(mk("p", "ev-who", lines.join("  |  ")));
