@@ -28,7 +28,7 @@
     targetsLog: [],
     rosters: [{ id: "varsity", name: "Varsity", casual: false }],
     schedRosters: ["varsity"],
-    features: { reviews: true, schedule: true, ranks: true, board: true },
+    features: { reviews: true, schedule: true, ranks: true, board: true, reminders: true },
     theme: DEFAULT_THEME,
     logo: "", icon: "", tz: "America/Chicago"
   };
@@ -538,7 +538,7 @@
     if (S.phase === "auth") return;
     for (const k of Object.keys(timers)) { clearTimeout(timers[k]); delete timers[k]; }
     dirty.clear();
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.events = []; S.cEvents = []; S.series = []; S.evEdit = null; S.needsSetup = false;
+    S.phase = "auth"; S.me = null; S.calUrl = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null; S.pweeks = {}; S.myReviews = []; S.reviews = []; S.events = []; S.cEvents = []; S.series = []; S.evEdit = null; S.needsSetup = false;
     setStatus($("#authStatus"), "Signed out. Sign in again.", "err");
     renderAll();
   }
@@ -552,9 +552,37 @@
     $("#accView").textContent = S.view === "coach" ? "Switch to my training" : "Back to the coach view";
     // A coach can put themselves on a roster to play.
     $("#accPlay").hidden = !coach;
+    renderCal();
     if (coach && document.activeElement !== $("#accTeam")) teamSelect($("#accTeam"), true, S.me.team);
   }
   $("#accView").addEventListener("click", () => setView(S.view === "coach" ? "player" : "coach"));
+  /* Calendar link: the person's events in Google, Apple or Outlook Calendar. Loaded when Account opens. */
+  let calLoading = false;
+  function renderCal() {
+    const box = $("#accCal"), show = !!S.me && !S.me.admin && feat("schedule") && (S.me.role === "coach" || S.schedAccess);
+    box.hidden = !show;
+    if (!show) return;
+    if (!S.calUrl && !calLoading) {
+      calLoading = true;
+      api("GET", "calendar").then(r => { S.calUrl = r.url; calLoading = false; renderCal(); }).catch(() => { calLoading = false; });
+    }
+    const webcal = S.calUrl ? S.calUrl.replace(/^https?:/, "webcal:") : "";
+    $("#calGoogle").href = webcal ? "https://calendar.google.com/calendar/r?cid=" + encodeURIComponent(webcal) : "#";
+    $("#calApple").href = webcal || "#";
+    box.querySelectorAll("a,button").forEach(x => { if (x.id !== "calReset") x.toggleAttribute("aria-disabled", !S.calUrl); });
+  }
+  $("#calCopy").addEventListener("click", async () => {
+    if (!S.calUrl) return;
+    try { await navigator.clipboard.writeText(S.calUrl); setStatus($("#calStatus"), "Link copied. In your calendar app, add a calendar from a URL and paste it.", "ok"); }
+    catch (_) { setStatus($("#calStatus"), S.calUrl, ""); }
+  });
+  $("#calReset").addEventListener("click", () => armOrRun($("#calReset"), async () => {
+    try {
+      const r = await api("POST", "calendar/reset");
+      S.calUrl = r.url; renderCal();
+      setStatus($("#calStatus"), "New link made. The old one stops working, so add this one to your calendar again.", "ok");
+    } catch (err) { setStatus($("#calStatus"), err.message, "err"); }
+  }, "Confirm: old link stops working"));
   // "Also plays on": every roster but their main one, checked where they sub. Hidden for someone not playing.
   function fillSubs(box, p) {
     if (!box || box.contains(document.activeElement)) return;
@@ -601,7 +629,7 @@
   $("#adminMember").addEventListener("click", () => {
     flushAll();
     S.adminSkip = true;
-    S.phase = "auth"; S.me = null; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.reviews = []; S.cEvents = []; S.evEdit = null;
+    S.phase = "auth"; S.me = null; S.calUrl = null; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.reviews = []; S.cEvents = []; S.evEdit = null;
     renderAll();
     setStatus($("#authStatus"), "Sign in with your team account. You stay signed in as the Backpost admin.", "");
     $("#authName").focus();
@@ -612,7 +640,7 @@
     try { await api("POST", "logout", pushSub ? { endpoint: pushSub.endpoint } : {}); } catch (_) {}
     if (pushSub) { try { await pushSub.unsubscribe(); } catch (_) {} pushSub = null; }
     pushSynced = false;
-    S.phase = "auth"; S.me = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null;
+    S.phase = "auth"; S.me = null; S.calUrl = null; S.weeks = {}; S.roster = {}; S.rosterWeeks = {}; S.sel = null; S.pdFor = null; S.board = null; S.myHist = []; S.hist = {}; S.noteOpen = null; S.noteDraft = {}; S.editOpen = null; S.editEl = null;
     $("#winAccount").hidden = true;
     setStatus($("#authStatus"), "");
     await boot();
@@ -1895,7 +1923,7 @@
     if (!zones.some(z => z[0] === s.tz)) zones.push([s.tz, s.tz.replace(/_/g, " ")]);
     if (tz.options.length !== zones.length) { tz.textContent = ""; zones.forEach(([v, l]) => tz.append(new Option(l, v))); }
     tz.value = s.tz;
-    document.querySelectorAll("#featBox [data-feat]").forEach(c => { c.checked = s.features[c.dataset.feat] !== false; });
+    document.querySelectorAll("#settingsForm [data-feat]").forEach(c => { c.checked = s.features[c.dataset.feat] !== false; });
     renderSchedRosterBox();
     // Look
     paintLogo($("#setLogoImg"), $("#setMono"), s);
@@ -2401,7 +2429,7 @@
     if (Notification.permission === "denied") return "blocked";
     return pushSub && Notification.permission === "granted" ? "on" : "off";
   }
-  const pushWhat = () => S.me && S.me.role === "coach" ? (S.me.team ? "replay review requests and schedule changes" : "replay review requests") : "Coach notes, replay reviews and schedule changes";
+  const pushWhat = () => S.me && S.me.role === "coach" ? (S.me.team ? "replay review requests, schedule changes and reminders" : "replay review requests") : "Coach notes, replay reviews, schedule changes and reminders";
   function renderAppBox() {
     if (!S.me) { renderAppTip(); return; }
     const inst = standalone();
