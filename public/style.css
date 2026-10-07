@@ -429,6 +429,9 @@ html[data-accent="no"] .wl-day.is-today .wl-date::after{background:var(--brand);
 .roster{min-width:0;border-top:3px solid var(--ink)}
 .rrow{display:grid;grid-template-columns:minmax(0,1fr) 64px 74px 100px;align-items:center;gap:10px;width:100%;padding:12px 10px;text-align:left;background:none;border:0;border-bottom:1.5px solid var(--line);color:inherit;font:inherit}
 .rrow:last-child{border-bottom:0}
+/* One heading per roster, in the team's roster order */
+.rgroup{display:flex;align-items:baseline;gap:8px;padding:16px 10px 6px;border-bottom:1.5px solid var(--line);font:var(--d-w) 16px/1 var(--display);text-transform:uppercase;letter-spacing:.05em}
+.rgroup-n{font:500 13px var(--text);color:var(--muted);letter-spacing:0}
 button.rrow:hover{background:var(--tint)}
 button.rrow[aria-current="true"]{background:var(--brand);color:var(--on-brand);border-bottom-color:transparent}
 .rrow:has(+ .rrow[aria-current="true"]){border-bottom-color:transparent}
@@ -452,7 +455,7 @@ html[data-accent="no"] .pill.live{background:var(--ink);border-color:var(--ink);
 .pill.missed{border-style:dashed}
 .pill.notyet{border-color:var(--line-2);color:var(--muted)}
 .pill.free{border-color:transparent;font-weight:500}
-@media (max-width:420px){.rrow{grid-template-columns:minmax(0,1fr) 48px 58px 86px;gap:6px;padding-inline:4px}.rrow.rh{font-size:12px;letter-spacing:.02em}.pill{padding-inline:7px}}
+@media (max-width:420px){.rrow{grid-template-columns:minmax(0,1fr) 48px 58px 86px;gap:6px;padding-inline:4px}.rgroup{padding-inline:4px}.rrow.rh{font-size:12px;letter-spacing:.02em}.pill{padding-inline:7px}}
 
 /* ---------- Team board: effort this week ---------- */
 .board-sub{margin-top:-4px}
