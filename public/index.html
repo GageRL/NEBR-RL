@@ -49,7 +49,7 @@
   });
 })();
 </script>
-<link rel="stylesheet" href="/style.css?v=59d891b486">
+<link rel="stylesheet" href="/style.css?v=5950cf694f">
 </head>
 <body>
 
@@ -135,7 +135,15 @@
     <div class="page page-progress" data-page="progress" hidden>
       <section class="win" id="winRanks" aria-labelledby="tRanks">
         <div class="tbar"><h2 class="ttl" id="tRanks">Ranks</h2><p class="tside" id="rankUpdated"></p></div>
-        <div class="wbody"><ul class="rank-list big" id="rankList"></ul></div>
+        <div class="wbody">
+          <div class="row rank-acts"><button type="button" class="btn sm primary" id="rankEdit">Update my ranks</button><a class="linkbtn" id="rankTracker" target="_blank" rel="noopener" hidden>Check your tracker ↗</a></div>
+          <p class="status" id="rankSaved" role="status"></p>
+          <form class="sub" id="rankForm" novalidate hidden>
+            <p class="status" id="rankStatus" role="status"></p>
+            <div class="row end"><button type="button" class="btn" id="rankCancel">Cancel</button><button type="submit" class="btn primary" id="rankSave">Save ranks</button></div>
+          </form>
+          <ul class="rank-list big" id="rankList"></ul>
+        </div>
       </section>
 
       <section class="win" id="winFocus" aria-labelledby="tFocus">
@@ -510,7 +518,7 @@
   <footer class="powered"><a href="https://getbackpost.com">Powered by <img src="/bp/mark.png" alt="" width="31" height="26"> <span>Backpost</span></a></footer>
 </div>
 
-<script src="/app.js?v=02a211239d" defer></script>
+<script src="/app.js?v=3471f1c7f5" defer></script>
 <script src="/site.js?v=3e50744e85" defer></script>
 </body>
 </html>
