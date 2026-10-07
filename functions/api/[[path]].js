@@ -1292,6 +1292,7 @@ async function route(ctx, segs) {
 // (Before that it lived at /api/admin only; OLD_ADMIN_JAR is cleared when the admin page loads.)
 const ADMIN_JAR = { name: "bp_a", path: "/api" };
 const OLD_ADMIN_JAR = { name: "bp_a", path: "/api/admin" };
+const ADMIN_DAYS = 14;
 // The admin, inside a school: a coach with a few extra powers (coach accounts, nothing personal).
 function adminAsCoach(adm, school) {
   return {
@@ -1310,9 +1311,9 @@ async function startAdminSession(db, req, adminId) {
   const { token, hash } = await newToken(), now = Date.now();
   await db.batch([
     db.prepare("DELETE FROM admin_sessions WHERE expires_at < ?").bind(now),
-    db.prepare("INSERT INTO admin_sessions (token_hash, admin_id, expires_at) VALUES (?, ?, ?)").bind(hash, adminId, now + 14 * 864e5)
+    db.prepare("INSERT INTO admin_sessions (token_hash, admin_id, expires_at) VALUES (?, ?, ?)").bind(hash, adminId, now + ADMIN_DAYS * 864e5)
   ]);
-  return setCookie(req, ADMIN_JAR, token, 14 * 86400);
+  return setCookie(req, ADMIN_JAR, token, ADMIN_DAYS * 86400);
 }
 async function sameSecret(a, b) {
   const [x, y] = await Promise.all([sha256hex(a), sha256hex(b)]);
@@ -1343,9 +1344,16 @@ async function adminRoute(ctx, segs) {
     const founder = any ? null : await loadSchool(db, LEGACY_SCHOOL);
     const res = json({ needsSetup: !any, founder: founder ? { slug: founder.id, name: founder.name } : null, me: admin ? { id: admin.id, name: admin.username } : null });
     if (admin) {
+      // The admin sign-in renews itself like a coach's: opening the admin page in the last
+      // 13 days of a sign-in pushes it out to 14 again (this keeps the hourly rank update signed in).
+      let left = admin.s_exp - Date.now();
+      if (left < (ADMIN_DAYS - 1) * 864e5) {
+        left = ADMIN_DAYS * 864e5;
+        await db.prepare("UPDATE admin_sessions SET expires_at = ? WHERE token_hash = ?").bind(Date.now() + left, admin.s_hash).run();
+      }
       // Move an older admin sign-in (sent only to /api/admin) to /api, keeping when it ends.
       res.headers.append("Set-Cookie", setCookie(req, OLD_ADMIN_JAR, "", 0));
-      res.headers.append("Set-Cookie", setCookie(req, ADMIN_JAR, readCookie(req, ADMIN_JAR.name), Math.max(60, Math.floor((admin.s_exp - Date.now()) / 1000))));
+      res.headers.append("Set-Cookie", setCookie(req, ADMIN_JAR, readCookie(req, ADMIN_JAR.name), Math.max(60, Math.floor(left / 1000))));
     }
     return res;
   }
