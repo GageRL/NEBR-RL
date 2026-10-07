@@ -13,4 +13,7 @@ jobs:
     timeout-minutes: 3
     steps:
       - name: Run reminders
-        run: curl -fsS --retry 2 --max-time 60 -X POST -H "Content-Type: application/json" -d '{}' https://getbackpost.com/api/tick
+        run: |
+          curl -fsS --retry 2 --max-time 60 -X POST \
+            -H "Content-Type: application/json" -d '{}' \
+            https://getbackpost.com/api/tick
